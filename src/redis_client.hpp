@@ -57,12 +57,13 @@ public:
     CRedisCommand(const std::string &strCmd, CmdType eType = CMD_NORMAL, bool bShareMem = true);
     virtual ~CRedisCommand() { ClearArgs(); }
     void ClearArgs();
-    void DumpArgs();
-    void DumpReply();
+    void DumpArgs() const;
+    void DumpReply() const;
 
     CmdType GetCmdType() const { return m_eType; }
     int GetSlot() const { return m_nSlot; }
-    std::string FetchErrMsg();
+    const redisReply * GetReply() const { return m_pReply; }
+    std::string FetchErrMsg() const;
 
     void SetSlot(int nSlot) { m_nSlot = nSlot; }
     void SetFetchFunc(TFuncFetch funcFetch) { m_funcFetch = funcFetch; }
@@ -114,14 +115,13 @@ public:
 
     bool IsValid() const { return m_queIdleConn.size(); }
 
-    // for the single request
+    // for the blocking request
     int ServRequest(CRedisCommand *pRedisCmd);
 
     // for the pipeline requirement
     int ServRequest(std::vector<CRedisCommand *> &vecRedisCmd);
 
 private:
-    // create redis connection pool
     redisContext *FetchConnection();
     void ReturnConnection(redisContext *pContext);
 
@@ -137,13 +137,17 @@ private:
 
 class CRedisPipeline
 {
+    friend class CRedisClient;
 public:
-    CRedisPipeline() : m_nCursor(0) {}
     ~CRedisPipeline();
+
+private:
+    CRedisPipeline() : m_nCursor(0) {}
 
     void QueueCommand(CRedisServer *pRedisServ, CRedisCommand *pRedisCmd);
     void FlushCommand();
     int FetchNext(TFuncFetch funcFetch);
+    int FetchNext(redisReply **pReply);
 
 private:
     std::map<CRedisServer *, std::vector<CRedisCommand *> > m_mapCmd;
@@ -161,34 +165,37 @@ public:
 
     Pipeline CreatePipeline();
     void FlushPipeline(Pipeline ppLine);
+    int FetchReply(Pipeline ppLine, long *pnVal);
     int FetchReply(Pipeline ppLine, std::string *pstrVal);
-    int FetchReply(Pipeline ppLine, redisReply **pReply) { return 0; }
+    int FetchReply(Pipeline ppLine, std::vector<long> *pvecLongVal);
+    int FetchReply(Pipeline ppLine, std::vector<std::string> *pvecStrVal);
+    int FetchReply(Pipeline ppLine, redisReply **pReply);
     void FreePipeline(Pipeline ppLine);
 
     /* interfaces for generic */
-    int Del(const std::string &strKey);
-    int Dump(const std::string &strKey, std::string *pstrVal);
-    int Exists(const std::string &strKey, long *pnVal);
-    int Expire(const std::string &strKey, int nSec);
+    int Del(const std::string &strKey, Pipeline ppLine = nullptr);
+    int Dump(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
+    int Exists(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
+    int Expire(const std::string &strKey, int nSec, Pipeline ppLine = nullptr);
     int Keys(const std::string &strPattern, std::vector<std::string> &vecVal);
-    int Persist(const std::string &strKey);
-    int Rename(const std::string &strKey, const std::string &strNewKey, int nOpt);
-    int Restore(const std::string &strKey, const std::string &strVal, int nTtl = 0);
+    int Persist(const std::string &strKey, Pipeline ppLine = nullptr);
+    int Rename(const std::string &strKey, const std::string &strNewKey, int nOpt, Pipeline ppLine = nullptr);
+    int Restore(const std::string &strKey, const std::string &strVal, int nTtl = 0, Pipeline ppLine = nullptr);
     int Scan(long nCursor, const std::string &strPattern, long nCount, std::vector<std::string> &vecVal);
-    int Ttl(const std::string &strKey, long *pnVal);
-    int Type(const std::string &strKey, std::string *pstrVal);
+    int Ttl(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
+    int Type(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
 
     /* interfaces for string */
-    int Append(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr);
-    int Decrby(const std::string &strKey, long nDecr, long *pnVal = nullptr);
+    int Append(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
+    int Decrby(const std::string &strKey, long nDecr, long *pnVal = nullptr, Pipeline ppLine = nullptr);
     int Get(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Getset(const std::string &strKey, std::string *pstrVal);
-    int Incrby(const std::string &strKey, long nIncr, long *pnVal);
-    int Incrbyfloat(const std::string &strKey, double dIncr, double *pdVal);
+    int Getset(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
+    int Incrby(const std::string &strKey, long nIncr, long *pnVal, Pipeline ppLine = nullptr);
+    int Incrbyfloat(const std::string &strKey, double dIncr, double *pdVal, Pipeline ppLine = nullptr);
     int Mget(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal);
     int Mset(const std::vector<std::string> &vecKey, const std::vector<std::string> &vecVal);
-    int Set(const std::string &strKey, const std::string &strVal);
-    int Strlen(const std::string &strKey, long *pnVal);
+    int Set(const std::string &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
+    int Strlen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
 
     /* interfaces for list */
 
@@ -207,7 +214,7 @@ private:
 
     template <typename P>
     int ExcuteImpl(const std::string &strCmd, TFuncFetch funcFetch, P tArg, int nSlot,
-                   TFuncConvert funcConv = FUNC_DEF_CONV, Pipeline ppLine = nullptr)
+                   Pipeline ppLine = nullptr, TFuncConvert funcConv = FUNC_DEF_CONV)
     {
         CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, CMD_NORMAL, !ppLine);
         pRedisCmd->SetConvFunc(funcConv);
@@ -223,7 +230,7 @@ private:
 
     template <typename P1, typename P2>
     int ExcuteImpl(const std::string &strCmd, TFuncFetch funcFetch, P1 tArg1, P2 tArg2, int nSlot,
-                   TFuncConvert funcConv = FUNC_DEF_CONV, Pipeline ppLine = nullptr)
+                   Pipeline ppLine = nullptr, TFuncConvert funcConv = FUNC_DEF_CONV)
     {
         CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, CMD_NORMAL, !ppLine);
         pRedisCmd->SetConvFunc(funcConv);
