@@ -301,8 +301,8 @@ static inline int FetchSlot(redisReply *pReply, std::vector<SlotRegion> *pvecSlo
 }
 
 // CRedisCommand methods
-CRedisCommand::CRedisCommand(const std::string &strCmd, CmdType eType, bool bShareMem)
-    : m_strCmd(strCmd), m_eType(eType), m_bShareMem(bShareMem), m_nArgs(0), m_nIdx(0), m_pszArgs(nullptr),
+CRedisCommand::CRedisCommand(const std::string &strCmd, bool bShareMem)
+    : m_strCmd(strCmd), m_bShareMem(bShareMem), m_nArgs(0), m_nIdx(0), m_pszArgs(nullptr),
       m_pnArgsLen(nullptr), m_pReply(nullptr), m_nSlot(-1), m_funcConv(FUNC_DEF_CONV)
 {
 }
@@ -337,6 +337,11 @@ std::string CRedisCommand::FetchErrMsg() const
     return strErrMsg;
 }
 
+bool CRedisCommand::IsMovedErr() const
+{
+    return FetchErrMsg().substr(0, 5) == "MOVED";
+}
+
 void CRedisCommand::DumpArgs() const
 {
     std::cout << "total " << m_nArgs << " args" << std::endl;
@@ -357,58 +362,74 @@ void CRedisCommand::SetArgs()
     InitMemory(1);
 }
 
-void CRedisCommand::SetArgs(const std::string &strKey)
+void CRedisCommand::SetArgs(const std::string &strArg)
 {
     InitMemory(2);
-    AppendValue(strKey);
+    AppendValue(strArg);
 }
 
-void CRedisCommand::SetArgs(const std::vector<std::string> &vecKey)
+void CRedisCommand::SetArgs(const std::vector<std::string> &vecArg)
 {
-    InitMemory(vecKey.size() + 1);
-    for (auto &strKey : vecKey)
-        AppendValue(strKey);
+    InitMemory(vecArg.size() + 1);
+    for (auto &strArg : vecArg)
+        AppendValue(strArg);
 }
 
-void CRedisCommand::SetArgs(const std::string &strKey, const std::string &strVal)
+void CRedisCommand::SetArgs(const std::string &strArg1, const std::string &strArg2)
 {
     InitMemory(3);
-    AppendValue(strKey);
-    AppendValue(strVal);
+    AppendValue(strArg1);
+    AppendValue(strArg2);
 }
 
-void CRedisCommand::SetArgs(const std::vector<std::string> &vecKey, const std::vector<std::string> &vecVal)
+void CRedisCommand::SetArgs(const std::string &strArg1, const std::vector<std::string> &vecArg2)
 {
-    if (vecKey.size() != vecVal.size())
+    InitMemory(vecArg2.size() + 2);
+    AppendValue(strArg1);
+    for (auto &strArg : vecArg2)
+        AppendValue(strArg);
+}
+
+void CRedisCommand::SetArgs(const std::vector<std::string> &vecArg1, const std::vector<std::string> &vecArg2)
+{
+    if (vecArg1.size() != vecArg2.size())
         return;
 
-    InitMemory(vecKey.size() * 2 + 1);
-    for (size_t i = 0; i < vecKey.size(); ++i)
+    InitMemory(vecArg1.size() * 2 + 1);
+    for (size_t i = 0; i < vecArg1.size(); ++i)
     {
-        AppendValue(vecKey[i]);
-        AppendValue(vecVal[i]);
+        AppendValue(vecArg1[i]);
+        AppendValue(vecArg2[i]);
     }
 }
 
-void CRedisCommand::SetArgs(const std::map<std::string, std::string> &mapKeyVal)
+void CRedisCommand::SetArgs(const std::map<std::string, std::string> &mapArg)
 {
-    InitMemory(mapKeyVal.size() * 2 + 1);
-    for (auto &kvPair : mapKeyVal)
+    InitMemory(mapArg.size() * 2 + 1);
+    for (auto &kvPair : mapArg)
     {
         AppendValue(kvPair.first);
         AppendValue(kvPair.second);
     }
 }
 
-void CRedisCommand::SetArgs(const std::string &strKey, const std::map<std::string, std::string> &mapKeyVal)
+void CRedisCommand::SetArgs(const std::string &strArg1, const std::map<std::string, std::string> &mapArg2)
 {
-    InitMemory(mapKeyVal.size() * 2 + 2);
-    AppendValue(strKey);
-    for (auto &kvPair : mapKeyVal)
+    InitMemory(mapArg2.size() * 2 + 2);
+    AppendValue(strArg1);
+    for (auto &kvPair : mapArg2)
     {
         AppendValue(kvPair.first);
         AppendValue(kvPair.second);
     }
+}
+
+void CRedisCommand::SetArgs(const std::string &strArg1, const std::string &strArg2, const std::string &strArg3)
+{
+    InitMemory(4);
+    AppendValue(strArg1);
+    AppendValue(strArg2);
+    AppendValue(strArg3);
 }
 
 void CRedisCommand::InitMemory(int nArgs)
@@ -478,11 +499,6 @@ int CRedisCommand::CmdReply(redisContext *pContext)
     return redisGetReply(pContext, (void **)&m_pReply) == REDIS_OK ? RC_SUCCESS : RC_RQST_ERR;
 }
 
-int CRedisCommand::FetchResult()
-{
-    return m_funcConv(m_funcFetch(m_pReply), m_pReply);
-}
-
 int CRedisCommand::FetchResult(const TFuncFetch &funcFetch)
 {
     return m_funcConv(funcFetch(m_pReply), m_pReply);
@@ -503,6 +519,19 @@ CRedisServer::CRedisServer(const std::string &strHost, int nPort, int nTimeout, 
 
 CRedisServer::~CRedisServer()
 {
+    m_mutexConn.lock();
+    while (!m_queIdleConn.empty())
+    {
+        redisContext *pContext = m_queIdleConn.front();
+        redisFree(pContext);
+        m_queIdleConn.pop();
+    }
+    m_mutexConn.unlock();
+}
+
+void CRedisServer::SetSlave(const std::string &strHost, int nPort)
+{
+    m_mapSlaveHost.insert(std::make_pair(strHost, nPort));
 }
 
 redisContext * CRedisServer::FetchConnection()
@@ -525,56 +554,57 @@ void CRedisServer::ReturnConnection(redisContext *pContext)
     m_mutexConn.unlock();
 }
 
+bool CRedisServer::TryConnectSlave()
+{
+    return true;
+}
+
 int CRedisServer::ServRequest(CRedisCommand *pRedisCmd)
 {
     redisContext *pContext = nullptr;
-    int nRetry = RQST_RETRY_TIMES;
-    int nRet = RC_RQST_ERR;
-    while (nRetry-- > 0)
+    int nTry = RQST_RETRY_TIMES;
+    while (nTry--)
     {
-        if (!(pContext = FetchConnection()))
-            return RC_NO_RESOURCE;
-
-        nRet = pRedisCmd->CmdRequest(pContext);
-        ReturnConnection(pContext);
-        if (nRet == RC_SUCCESS)
-        {
-            nRet = pRedisCmd->FetchResult();
+        if ((pContext = FetchConnection()))
             break;
-        }
         usleep(100);
     }
-    return nRet;
+
+    if (!pContext)
+        return RC_NO_RESOURCE;
+
+    int nRet = pRedisCmd->CmdRequest(pContext);
+    ReturnConnection(pContext);
+    if (nRet == RC_RQST_ERR && !m_mapSlaveHost.empty())
+        return TryConnectSlave() ? ServRequest(pRedisCmd) : nRet;
+    else
+        return nRet;
 }
 
 int CRedisServer::ServRequest(std::vector<CRedisCommand *> &vecRedisCmd)
 {
     redisContext *pContext = nullptr;
-    int nRet = RC_RQST_ERR;
-    if (!(pContext = FetchConnection()))
+    int nTry = RQST_RETRY_TIMES;
+    while (nTry--)
+    {
+        if ((pContext = FetchConnection()))
+            break;
+        usleep(100);
+    }
+
+    if (!pContext)
         return RC_NO_RESOURCE;
 
-    while (1)
-    {
-        for (auto pRedisCmd : vecRedisCmd)
-        {
-            if ((nRet = pRedisCmd->CmdAppend(pContext)) != RC_SUCCESS)
-                break;
-        }
+    int nRet = RC_SUCCESS;
+    for (size_t i = 0; i < vecRedisCmd.size() && nRet == RC_SUCCESS; ++i)
+        nRet = vecRedisCmd[i]->CmdAppend(pContext);
+    for (size_t i = 0; i < vecRedisCmd.size() && nRet == RC_SUCCESS; ++i)
+        nRet = vecRedisCmd[i]->CmdReply(pContext);
 
-        if (nRet == RC_SUCCESS)
-        {
-            for (auto pRedisCmd : vecRedisCmd)
-            {
-                if ((nRet = pRedisCmd->CmdReply(pContext)) != RC_SUCCESS)
-                    break;
-            }
-        }
-
-        ReturnConnection(pContext);
-        break;
-    }
-    return nRet;
+    if (nRet == RC_RQST_ERR && !m_mapSlaveHost.empty())
+        return TryConnectSlave() ? ServRequest(vecRedisCmd) : nRet;
+    else
+        return nRet;
 }
 
 // CRedisPipeline methods
@@ -584,24 +614,32 @@ CRedisPipeline::~CRedisPipeline()
         delete pRedisCmd;
 }
 
-void CRedisPipeline::QueueCommand(CRedisServer *pRedisServ, CRedisCommand *pRedisCmd)
+void CRedisPipeline::QueueCommand(CRedisCommand *pRedisCmd)
 {
     m_vecCmd.push_back(pRedisCmd);
-    auto it = m_mapCmd.find(pRedisServ);
-    if (it != m_mapCmd.end())
-        it->second.push_back(pRedisCmd);
-    else
-    {
-        std::vector<CRedisCommand *> vecCmd;
-        vecCmd.push_back(pRedisCmd);
-        m_mapCmd.insert(std::make_pair(pRedisServ, vecCmd));
-    }
 }
 
-void CRedisPipeline::FlushCommand()
+int CRedisPipeline::FlushCommand(CRedisClient *pRedisCli)
 {
-    for (auto &pairCmd : m_mapCmd)
-        pairCmd.first->ServRequest(pairCmd.second);
+    m_mapCmd.clear();
+    for (auto &pRedisCmd : m_vecCmd)
+    {
+        CRedisServer *pRedisServ = pRedisCli->GetMatchedServer(pRedisCmd);
+        auto it = m_mapCmd.find(pRedisServ);
+        if (it != m_mapCmd.end())
+            it->second.push_back(pRedisCmd);
+        else
+        {
+            std::vector<CRedisCommand *> vecCmd;
+            vecCmd.push_back(pRedisCmd);
+            m_mapCmd.insert(std::make_pair(pRedisServ, vecCmd));
+        }
+    }
+
+    int nRet = RC_SUCCESS;
+    for (auto it = m_mapCmd.begin(); it != m_mapCmd.end() && nRet == RC_SUCCESS; ++it)
+        nRet = it->first->ServRequest(it->second);
+    return nRet;
 }
 
 int CRedisPipeline::FetchNext(TFuncFetch funcFetch)
@@ -644,55 +682,87 @@ bool CRedisClient::Initialize()
     if (m_strHost.empty() || m_nPort <= 0)
         return false;
 
-    CRedisServer *pRedisServ = new CRedisServer(m_strHost, m_nPort, m_nTimeout, 1);
+    CRedisServer *pRedisServ = new CRedisServer(m_strHost, m_nPort, m_nTimeout, m_nConnNum);
     if (!pRedisServ->IsValid())
         return false;
+
+    std::string strInfo;
+    std::map<std::string, std::string> mapInfo;
+    CRedisCommand redisCmd("info");
+    redisCmd.SetArgs();
+    if (pRedisServ->ServRequest(&redisCmd) != RC_SUCCESS ||
+        redisCmd.FetchResult(BIND_STR(&strInfo)) != RC_SUCCESS ||
+        !ConvertToMapInfo(strInfo, mapInfo))
+        return false;
+
+    auto it = mapInfo.find("cluster_enabled");
+    if (it == mapInfo.end())
+        return false;
     else
-    {
-        m_vecRedisServ.push_back(pRedisServ);
-        return LoadClusterSlots();
-    }
+        m_bCluster = (bool)atoi(it->second.c_str());
+
+    m_vecRedisServ.push_back(pRedisServ);
+    return m_bCluster ? LoadClusterSlots() : LoadSlaveInfo(mapInfo);
 }
 
 /* interfaces for generic */
 int CRedisClient::Del(const std::string &strKey, Pipeline ppLine)
 {
-    return ExcuteImpl("del", BIND_INT(nullptr), strKey, HASH_SLOT(strKey), ppLine, IntResConv());
+    return ExcuteImpl("del", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(nullptr), IntResConv());
 }
 
 int CRedisClient::Dump(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
 {
-    return ExcuteImpl("dump", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("dump", strKey, HASH_SLOT(strKey), ppLine, BIND_STR(pstrVal));
 }
 
 int CRedisClient::Exists(const std::string &strKey, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("exists", BIND_INT(pnVal), strKey, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("exists", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
 
 int CRedisClient::Expire(const std::string &strKey, int nSec, Pipeline ppLine)
 {
-    return ExcuteImpl("expire", BIND_INT(nullptr), strKey, ConvertToString(nSec), HASH_SLOT(strKey), ppLine, IntResConv());
+    return ExcuteImpl("expire", strKey, ConvertToString(nSec), HASH_SLOT(strKey), ppLine, BIND_INT(nullptr), IntResConv());
 }
 
-int CRedisClient::Keys(const std::string &strPattern, std::vector<std::string> &vecVal)
+int CRedisClient::Keys(const std::string &strPattern, std::vector<std::string> *pvecVal)
 {
-    return RC_SUCCESS;
+    CRedisCommand redisCmd("keys");
+    redisCmd.SetArgs(strPattern);
+
+    int nRet;
+    for (auto pRedisServ : m_vecRedisServ)
+    {
+        if ((nRet = pRedisServ->ServRequest(&redisCmd)) != RC_SUCCESS ||
+            (nRet = redisCmd.FetchResult(BIND_VSTR(pvecVal))) != RC_SUCCESS)
+        {
+            if (pvecVal)
+                pvecVal->clear();
+            return nRet;
+        }
+    }
+    return nRet;
 }
 
 int CRedisClient::Persist(const std::string &strKey, Pipeline ppLine)
 {
-    return ExcuteImpl("persist", BIND_INT(nullptr), strKey, HASH_SLOT(strKey), ppLine, IntResConv(RC_NO_EFFECT));
+    return ExcuteImpl("persist", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(nullptr), IntResConv(RC_NO_EFFECT));
 }
 
-int CRedisClient::Rename(const std::string &strKey, const std::string &strNewKey, int nOpt, Pipeline ppLine)
+int CRedisClient::Rename(const std::string &strKey, const std::string &strNewKey, Pipeline ppLine)
 {
-    return RC_SUCCESS;
+    return ExcuteImpl("rename", strKey, strNewKey, HASH_SLOT(strKey), ppLine, BIND_INT(nullptr));
+}
+
+int CRedisClient::Renamenx(const std::string &strKey, const std::string &strNewKey, Pipeline ppLine)
+{
+    return ExcuteImpl("renamenx", strKey, strNewKey, HASH_SLOT(strKey), ppLine, BIND_INT(nullptr));
 }
 
 int CRedisClient::Restore(const std::string &strKey, const std::string &strVal, int nTtl, Pipeline ppLine)
 {
-    return RC_SUCCESS;
+    return ExcuteImpl("restore", strKey, strVal, ConvertToString(nTtl), HASH_SLOT(strKey), ppLine, BIND_INT(nullptr));
 }
 
 int CRedisClient::Scan(long nCursor, const std::string &strPattern, long nCount, std::vector<std::string> &vecVal)
@@ -702,38 +772,38 @@ int CRedisClient::Scan(long nCursor, const std::string &strPattern, long nCount,
 
 int CRedisClient::Ttl(const std::string &strKey, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("ttl", BIND_INT(pnVal), strKey, HASH_SLOT(strKey), ppLine, IntResConv(RC_KEY_NOT_EXIST, -2));
+    return ExcuteImpl("ttl", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal), IntResConv(RC_KEY_NOT_EXIST, -2));
 }
 
 int CRedisClient::Type(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
 {
-    return ExcuteImpl("type", BIND_STU(pstrVal), strKey, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("type", strKey, HASH_SLOT(strKey), ppLine, BIND_STU(pstrVal));
 }
 
 /* interfaces for string */
 int CRedisClient::Append(const std::string &strKey, const std::string &strVal, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("append", BIND_INT(pnVal), strKey, strVal, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("append", strKey, strVal, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
 
 int CRedisClient::Decrby(const std::string &strKey, long nDecr, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("decrby", BIND_INT(pnVal), strKey, ConvertToString(nDecr), HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("decrby", strKey, ConvertToString(nDecr), HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
 
 int CRedisClient::Get(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
 {
-    return ExcuteImpl("get", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("get", strKey, HASH_SLOT(strKey), ppLine, BIND_STR(pstrVal));
 }
 
 int CRedisClient::Getset(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
 {
-    return ExcuteImpl("getset", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey));
+    return ExcuteImpl("getset", strKey, *pstrVal, HASH_SLOT(strKey), ppLine, BIND_STR(pstrVal));
 }
 
 int CRedisClient::Incrby(const std::string &strKey, long nIncr, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("incrby", BIND_INT(pnVal), strKey, ConvertToString(nIncr), HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("incrby", strKey, ConvertToString(nIncr), HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
 
 int CRedisClient::Incrbyfloat(const std::string &strKey, double dIncr, double *pdVal, Pipeline ppLine)
@@ -747,7 +817,7 @@ int CRedisClient::Mget(const std::vector<std::string> &vecKey, std::vector<std::
         return RC_SUCCESS;
 
     if (!m_bCluster)
-        return ExcuteImpl("mget", BIND_VSTR(pvecVal), vecKey, HASH_SLOT(vecKey[0]));
+        return ExcuteImpl("mget", vecKey, HASH_SLOT(vecKey[0]), nullptr, BIND_VSTR(pvecVal));
     else
     {
         Pipeline ppLine = CreatePipeline();
@@ -785,26 +855,147 @@ int CRedisClient::Mset(const std::vector<std::string> &vecKey, const std::vector
 
 int CRedisClient::Set(const std::string &strKey, const std::string &strVal, Pipeline ppLine)
 {
-    return ExcuteImpl("set", BIND_STU(nullptr), strKey, strVal, HASH_SLOT(strKey), ppLine, StuResConv("OK"));
+    return ExcuteImpl("set", strKey, strVal, HASH_SLOT(strKey), ppLine, BIND_STU(nullptr), StuResConv("OK"));
 }
 
 int CRedisClient::Strlen(const std::string &strKey, long *pnVal, Pipeline ppLine)
 {
-    return ExcuteImpl("strlen", BIND_INT(pnVal), strKey, HASH_SLOT(strKey), ppLine);
+    return ExcuteImpl("strlen", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
+
+//int CRedisClient::Blpop(const std::string &strKey, int nTimeout, std::string *pstrVal)
+//{
+//    return ExcuteImpl("blpop", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey));
+//}
+//
+//int CRedisClient::Brpop(const std::string &strKey, int nTimeout, std::string *pstrVal)
+//{
+//    return ExcuteImpl("brpop", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey));
+//}
+//
+//int CRedisClient::Lindex(const std::string &strKey, long nIndex, std::string *pstrVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lindex", BIND_STR(pstrVal), strKey, ConvertToString(nIndex), HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Llen(const std::string &strKey, long *pnVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("llen", BIND_INT(pnVal), strKey, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Lpop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lpop", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey), ppLine);
+//}
+//
+int CRedisClient::Lpush(const std::string &strKey, const std::string &strVal, Pipeline ppLine)
+{
+    return ExcuteImpl("lpush", strKey, strVal, HASH_SLOT(strKey), ppLine, BIND_INT(nullptr));
+}
+
+//int CRedisClient::Lpush(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lpush", BIND_INT(nullptr), strKey, vecVal, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Lpushx(const std::string &strKey, const std::string &strVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lpushx", BIND_INT(nullptr), strKey, strVal, HASH_SLOT(strKey), ppLine);
+//}
+
+int CRedisClient::Lrange(const std::string &strKey, long nStart, long nStop, std::vector<std::string> *pvecVal, Pipeline ppLine)
+{
+    return ExcuteImpl("lrange", strKey, ConvertToString(nStart), ConvertToString(nStop), HASH_SLOT(strKey), ppLine, BIND_VSTR(pvecVal));
+}
+
+//int CRedisClient::Lrem(const std::string &strKey, long nCount, const std::string &strVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lrem", BIND_INT(nullptr), strKey, ConvertToString(nCount), strVal, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Lset(const std::string &strKey, long nIndex, const std::string &strVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("lset", BIND_INT(nullptr), strKey, ConvertToString(nIndex), strVal, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Ltrim(const std::string &strKey, long nStart, long nStop, Pipeline ppLine)
+//{
+//    return ExcuteImpl("ltrim", BIND_INT(nullptr), strKey, ConvertToString(nStart), ConvertToString(nStop), HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Rpop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("rpop", BIND_STR(pstrVal), strKey, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Rpush(const std::string &strKey, const std::string &strVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("rpush", BIND_STR(nullptr), strKey, strVal, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Rpush(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("rpush", BIND_INT(nullptr), strKey, vecVal, HASH_SLOT(strKey), ppLine);
+//}
+//
+//int CRedisClient::Rpushx(const std::string &strKey, const std::string &strVal, Pipeline ppLine)
+//{
+//    return ExcuteImpl("rpushx", BIND_INT(nullptr), strKey, strVal, HASH_SLOT(strKey), ppLine);
+//}
+
+/* interfaces for set */
+//int CRedisClient::Sadd(const std::string &strKey, const std::string &strVal, Pipeline = nullptr);
+//int CRedisClient::Scard(const std::string &strKey, long *pnVal, Pipeline = nullptr);
+//int CRedisClient::Sdiff(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Sinter(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Sismember(const std::string &strKey, const std::string &strVal, long *pnVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Smembers(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Spop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Srandmember(const std::string &strKey, long nCount, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Srem(const std::string &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Srem(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Sunion(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+
+/* interfaces for hash */
+//int CRedisClient::Hdel(const std::string &strKey, const std::string &strField, Pipeline ppLine = nullptr);
+//int CRedisClient::Hexists(const std::string &strKey, const std::string &strField, long *pnVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hget(const std::string &strKey, const std::string &strField, std::string *pstrVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hgetall(const std::string &strKey, std::vector<std::string> *pvecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hincrby(const std::string &strKey, const std::string &strField, long nIncr, Pipeline ppLine = nullptr);
+//int CRedisClient::Hincrbyfloat(const std::string &strKey, double dIncr, Pipeline ppLine = nullptr);
+//int CRedisClient::Hkeys(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hlen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hmget(const std::string &strKey, const std::vector<std::string> &vecField, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hsget(const std::string &strKey, const std::vector<std::string> &vecField, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hset(const std::string &strKey, const std::string &strField, const std::string &strVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Hvals(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+
+/* interfaces for sorted set */
+//int CRedisClient::Zadd(const std::string &strKey, double dScore, const std::string &strVal, Pipeline = nullptr);
+//int CRedisClient::Zcard(const std::string &strKey, long *pnVal, Pipeline = nullptr);
+//int CRedisClient::Zcount(const std::string &strKey, double dMin, double dMax, long *pnVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Zincrby(const std::string &strKey, double dIncr, const std::string &strVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Zrange(const std::string &strKey, long nStart, long nStop, const std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Zrem(const std::string &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Zrem(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
+//int CRedisClient::Zscore(const std::string &strKey, const std::string> &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
 
 Pipeline CRedisClient::CreatePipeline()
 {
     return new CRedisPipeline();
 }
 
-void CRedisClient::FlushPipeline(Pipeline ppLine)
+int CRedisClient::FlushPipeline(Pipeline ppLine)
 {
     if (!ppLine)
-        return;
+        return RC_PIPELINE_ERR;
 
     CRedisPipeline *pPipeline = static_cast<CRedisPipeline *>(ppLine);
-    pPipeline->FlushCommand();
+    int nRet = pPipeline->FlushCommand(this);
+    if (!m_bCluster || !TryReloadSlots())
+        return nRet;
+    else
+        return pPipeline->FlushCommand(this);
 }
 
 #define MacroDefine(type, func) \
@@ -842,12 +1033,44 @@ void CRedisClient::FreePipeline(Pipeline ppLine)
 }
 
 // private methods
+bool CRedisClient::LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo)
+{
+    auto it = mapInfo.find("connected_slaves");
+    if (it == mapInfo.end())
+        return true;
+
+    std::stringstream ss;
+    std::string strItem;
+    int nSlave = atoi(it->second.c_str());
+    for (int i = 0; i < nSlave; ++i)
+    {
+        ss.str();
+        ss << "slave" << i;
+        it = mapInfo.find(ss.str());
+        if (it == mapInfo.end())
+            continue;
+
+        std::string strHost;
+        int nPort = -1;
+        ss.str(it->second);
+        while (ss >> strItem)
+        {
+            if (strItem.substr(0, 3) == "ip=")
+                strHost = strItem.substr(3);
+            else if (strItem.substr(0, 5) == "port=")
+                nPort = atoi(strItem.substr(5).c_str());
+        }
+        if (!strHost.empty() && nPort != -1)
+            m_vecRedisServ[0]->SetSlave(strHost, nPort);
+    }
+    return true;
+}
+
 bool CRedisClient::LoadClusterSlots()
 {
     std::vector<CRedisServer *> vecRedisServ;
     std::vector<SlotRegion> vecSlot;
     CRedisCommand redisCmd("cluster");
-    redisCmd.SetFetchFunc(BIND_SLOT(&vecSlot));
     redisCmd.SetArgs("slots");
 
     for (size_t i = 0; i < m_vecRedisServ.size(); ++i)
@@ -857,8 +1080,8 @@ bool CRedisClient::LoadClusterSlots()
             return false;
 
         CRedisServer *pSlotServ = nullptr;
-        int nRet = pRedisServ->ServRequest(&redisCmd);
-        if (nRet == RC_SUCCESS)
+        if (pRedisServ->ServRequest(&redisCmd) == RC_SUCCESS &&
+            redisCmd.FetchResult(BIND_SLOT(&vecSlot)) == RC_SUCCESS)
         {
             for (auto &slotReg : vecSlot)
             {
@@ -876,27 +1099,18 @@ bool CRedisClient::LoadClusterSlots()
             std::sort(vecSlot.begin(), vecSlot.end());
             m_vecRedisServ = vecRedisServ;
             m_vecSlot = vecSlot;
-            m_bCluster = true;
             return true;
-        }
-        else if (nRet == RC_REPLY_ERR)
-        {
-            std::string strErrMsg = redisCmd.FetchErrMsg();
-            std::transform(strErrMsg.begin(), strErrMsg.end(), strErrMsg.begin(), toupper);
-            if (strErrMsg == "ERR UNKNOWN COMMAND 'CLUSTER'" ||
-                strErrMsg == "ERR THIS INSTANCE HAS CLUSTER SUPPORT DISABLED")
-            {
-                pSlotServ = new CRedisServer(m_strHost, m_nPort, m_nTimeout, m_nConnNum);
-                if (!pSlotServ->IsValid())
-                    return false;
-
-                CleanServer();
-                m_vecRedisServ.push_back(pSlotServ);
-                return true;
-            }
         }
     }
     return false;
+}
+
+bool CRedisClient::TryReloadSlots()
+{
+    int nRetry = SLOTS_RELOAD_TIMES;
+    while (!LoadClusterSlots() && nRetry-- > 0)
+        usleep(100);
+    return nRetry > 0;
 }
 
 void CRedisClient::CleanServer()
@@ -909,64 +1123,70 @@ void CRedisClient::CleanServer()
 
 int CRedisClient::Excute(CRedisCommand *pRedisCmd, Pipeline ppLine)
 {
-    CRedisServer *pRedisServ = GetMatchedServer(pRedisCmd);
-    if (!pRedisServ)
-        return RC_RQST_ERR;
-
-    if (!ppLine)
-    {
-        int nRet = pRedisServ->ServRequest(pRedisCmd);
-        if ((nRet == RC_REPLY_ERR && pRedisCmd->FetchErrMsg().substr(0, 5) == "MOVED")
-            || nRet == RC_RQST_ERR)
-        {
-            int nRetry = INIT_RETRY_TIMES;
-            while (!LoadClusterSlots() && nRetry-- > 0)
-                usleep(100);
-            return nRetry == 0 ? nRet : Excute(pRedisCmd);
-        }
-        else
-            return nRet;
-    }
-    else
+    if (ppLine)
     {
         CRedisPipeline *pPipeline = static_cast<CRedisPipeline *>(ppLine);
-        pPipeline->QueueCommand(pRedisServ, pRedisCmd);
+        pPipeline->QueueCommand(pRedisCmd);
         return RC_SUCCESS;
+    }
+
+    if (!m_bCluster)
+        return SimpleExcute(pRedisCmd);
+    else
+    {
+        int nRet = SimpleExcute(pRedisCmd);
+        if ((nRet = RC_SUCCESS && pRedisCmd->IsMovedErr()) || nRet == RC_RQST_ERR)
+        {
+            if (TryReloadSlots())
+                return SimpleExcute(pRedisCmd);
+        }
+        return nRet;
     }
 }
 
-CRedisServer * CRedisClient::GetActiveServer() const
+int CRedisClient::SimpleExcute(CRedisCommand *pRedisCmd)
 {
-    for (auto &pRedisServ : m_vecRedisServ)
+    CRedisServer *pRedisServ = GetMatchedServer(pRedisCmd);
+    return pRedisServ ? pRedisServ->ServRequest(pRedisCmd) : RC_RQST_ERR;
+}
+
+bool CRedisClient::ConvertToMapInfo(const std::string &strVal, std::map<std::string, std::string> &mapVal)
+{
+    std::stringstream ss(strVal);
+    std::string strLine;
+    while (std::getline(ss, strLine))
     {
-        if (pRedisServ->IsValid())
-            return pRedisServ;
+        if (strLine.empty() || strLine[0] == '\r' || strLine[0] == '#')
+            continue;
+
+        std::string::size_type nPos = strLine.find(':');
+        if (nPos == std::string::npos)
+            return false;
+        mapVal.insert(std::make_pair(strLine.substr(0, nPos), strLine.substr(nPos + 1)));
     }
-    return nullptr;
+    return true;
 }
 
 CRedisServer * CRedisClient::GetMatchedServer(const CRedisCommand *pRedisCmd) const
 {
     if (!m_bCluster)
-        return m_vecRedisServ[0];
+        return m_vecRedisServ.empty() ? nullptr : m_vecRedisServ[0];
+    else if (pRedisCmd->GetSlot() == -1)
+    {
+        for (auto &pRedisServ : m_vecRedisServ)
+        {
+            if (pRedisServ->IsValid())
+                return pRedisServ;
+        }
+        return nullptr;
+    }
     else
     {
-        switch (pRedisCmd->GetCmdType())
-        {
-        case CMD_SYSTEM:
-        case CMD_MESSAGE:
+        auto pairIter = std::equal_range(m_vecSlot.begin(), m_vecSlot.end(), pRedisCmd->GetSlot(), CompSlot());
+        if (pairIter.first != m_vecSlot.end() && pairIter.first != pairIter.second)
+            return pairIter.first->pRedisServ;
+        else
             return nullptr;
-        case CMD_NORMAL:
-            {
-                auto pairIter = std::equal_range(m_vecSlot.begin(), m_vecSlot.end(), pRedisCmd->GetSlot(), CompSlot());
-                if (pairIter.first != m_vecSlot.end() && pairIter.first != pairIter.second)
-                    return pairIter.first->pRedisServ;
-                else
-                    return nullptr;
-            }
-        default:
-            return nullptr;
-        }
     }
 }
 
