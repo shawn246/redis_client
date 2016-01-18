@@ -644,16 +644,16 @@ int CRedisCommand::FetchResult(const TFuncFetch &funcFetch)
 CRedisServer::CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNum)
     : m_strHost(strHost), m_nPort(nPort), m_nTimeout(nTimeout), m_nConnNum(nConnNum)
 {
-    struct timeval tmTimeout = {m_nTimeout, 0};
-    redisContext *pContext = nullptr;
-    for (int i = 0; i < m_nConnNum; ++i)
-    {
-        if ((pContext = redisConnectWithTimeout(m_strHost.c_str(), m_nPort, tmTimeout)))
-            m_queIdleConn.push(pContext);
-    }
+    SetSlave(strHost, nPort);
+    Reconnect();
 }
 
 CRedisServer::~CRedisServer()
+{
+    CleanConn();
+}
+
+void CRedisServer::CleanConn()
 {
     m_mutexConn.lock();
     while (!m_queIdleConn.empty())
@@ -667,7 +667,7 @@ CRedisServer::~CRedisServer()
 
 void CRedisServer::SetSlave(const std::string &strHost, int nPort)
 {
-    m_mapSlaveHost.insert(std::make_pair(strHost, nPort));
+    m_vecHosts.push_back(std::make_pair(strHost, nPort));
 }
 
 redisContext * CRedisServer::FetchConnection()
@@ -690,9 +690,33 @@ void CRedisServer::ReturnConnection(redisContext *pContext)
     m_mutexConn.unlock();
 }
 
-bool CRedisServer::TryConnectSlave()
+bool CRedisServer::Reconnect()
 {
-    return true;
+    CleanConn();
+
+    struct timeval tmTimeout = {m_nTimeout, 0};
+    redisContext *pContext = nullptr;
+    for (auto &hostPair : m_vecHosts)
+    {
+        for (int i = 0; i < m_nConnNum; ++i)
+        {
+            pContext = redisConnectWithTimeout(hostPair.first.c_str(), hostPair.second, tmTimeout);
+            if (!pContext || pContext->err)
+            {
+                if (pContext)
+                    redisFree(pContext);
+            }
+            else
+                m_queIdleConn.push(pContext);
+        }
+        if (!m_queIdleConn.empty())
+        {
+            m_strHost = hostPair.first;
+            m_nPort = hostPair.second;
+            break;
+        }
+    }
+    return !m_queIdleConn.empty();
 }
 
 int CRedisServer::ServRequest(CRedisCommand *pRedisCmd)
@@ -703,7 +727,7 @@ int CRedisServer::ServRequest(CRedisCommand *pRedisCmd)
     {
         if ((pContext = FetchConnection()))
             break;
-        usleep(100);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     if (!pContext)
@@ -711,10 +735,7 @@ int CRedisServer::ServRequest(CRedisCommand *pRedisCmd)
 
     int nRet = pRedisCmd->CmdRequest(pContext);
     ReturnConnection(pContext);
-    if (nRet == RC_RQST_ERR && !m_mapSlaveHost.empty())
-        return TryConnectSlave() ? ServRequest(pRedisCmd) : nRet;
-    else
-        return nRet;
+    return nRet;
 }
 
 int CRedisServer::ServRequest(std::vector<CRedisCommand *> &vecRedisCmd)
@@ -725,7 +746,7 @@ int CRedisServer::ServRequest(std::vector<CRedisCommand *> &vecRedisCmd)
     {
         if ((pContext = FetchConnection()))
             break;
-        usleep(100);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     if (!pContext)
@@ -736,11 +757,7 @@ int CRedisServer::ServRequest(std::vector<CRedisCommand *> &vecRedisCmd)
         nRet = vecRedisCmd[i]->CmdAppend(pContext);
     for (size_t i = 0; i < vecRedisCmd.size() && nRet == RC_SUCCESS; ++i)
         nRet = vecRedisCmd[i]->CmdReply(pContext);
-
-    if (nRet == RC_RQST_ERR && !m_mapSlaveHost.empty())
-        return TryConnectSlave() ? ServRequest(vecRedisCmd) : nRet;
-    else
-        return nRet;
+    return nRet;
 }
 
 // CRedisPipeline methods
@@ -807,8 +824,8 @@ CRedisClient::CRedisClient(const std::string &strHost, int nPort, int nTimeout, 
     m_nConnNum = nConnNum <= 0 ? 5 : nConnNum;
     m_bCluster = false;
     m_pThread = nullptr;
-    m_bValid = false;
-    m_bExit = true;
+    m_bValid = true;
+    m_bExit = false;
 
     pthread_rwlockattr_init(&m_rwAttr);
 #if defined(LINUX) || defined(_LINUX)
@@ -819,9 +836,17 @@ CRedisClient::CRedisClient(const std::string &strHost, int nPort, int nTimeout, 
 
 CRedisClient::~CRedisClient()
 {
+    m_bValid = false;
     m_bExit = true;
-    m_pThread->join();
-    delete m_pThread;
+    CSafeLock safeLock(&m_rwLock);
+    safeLock.WriteLock();
+    m_condAny.notify_one();
+    safeLock.Unlock();
+    if (m_pThread)
+    {
+        m_pThread->join();
+        delete m_pThread;
+    }
 
     CleanServer();
     pthread_rwlockattr_destroy(&m_rwAttr);
@@ -860,12 +885,18 @@ bool CRedisClient::Initialize()
 
 void CRedisClient::operator()()
 {
-    CSafeLock safeLock(&m_rwLock);
-    while (m_bExit)
+    while (!m_bExit)
     {
+        CSafeLock safeLock(&m_rwLock);
         safeLock.WriteLock();
-        m_condAny.wait(safeLock);
-        m_bValid = LoadClusterSlots();
+        if (m_bValid)
+            m_condAny.wait(safeLock);
+
+        m_bValid = m_bCluster ? LoadClusterSlots() : m_vecRedisServ[0]->Reconnect();
+        safeLock.Unlock();
+
+        if (!m_bValid)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
@@ -1451,7 +1482,7 @@ int CRedisClient::FlushPipeline(Pipeline ppLine)
         return nRet;
     else
     {
-        if (!m_bCluster || !WaitForReload())
+        if (!m_bCluster || !WaitForRefresh())
             return nRet;
         else
             return pPipeline->FlushCommand(this);
@@ -1565,7 +1596,7 @@ bool CRedisClient::LoadClusterSlots()
     return false;
 }
 
-bool CRedisClient::WaitForReload()
+bool CRedisClient::WaitForRefresh()
 {
     CSafeLock safeLock(&m_rwLock);
     if (safeLock.TryReadLock())
@@ -1576,7 +1607,7 @@ bool CRedisClient::WaitForReload()
 
     int nRetry = WAIT_RETRY_TIMES;
     while (!m_bValid && nRetry-- > 0)
-        usleep(100);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     return m_bValid;
 }
 
@@ -1602,16 +1633,19 @@ int CRedisClient::Execute(CRedisCommand *pRedisCmd, Pipeline ppLine)
 
     int nRet = SimpleExecute(pRedisCmd);
     if (!m_bCluster)
-        return nRet;
+    {
+        if (nRet == RC_RQST_ERR && WaitForRefresh())
+            return SimpleExecute(pRedisCmd);
+    }
     else
     {
         if ((nRet == RC_REPLY_ERR && pRedisCmd->IsMovedErr()) || nRet == RC_RQST_ERR)
         {
-            if (WaitForReload())
+            if (WaitForRefresh())
                 return SimpleExecute(pRedisCmd);
         }
-        return nRet;
     }
+    return nRet;
 }
 
 int CRedisClient::SimpleExecute(CRedisCommand *pRedisCmd)
@@ -1681,5 +1715,5 @@ CRedisServer * CRedisClient::FindServer(const std::vector<CRedisServer *> &vecRe
 
 bool CRedisClient::InSameNode(const std::string &strKey1, const std::string &strKey2)
 {
-    return !m_bCluster && FindServer(HASH_SLOT(strKey1)) == FindServer(HASH_SLOT(strKey2));
+    return m_bCluster ? FindServer(HASH_SLOT(strKey1)) == FindServer(HASH_SLOT(strKey2)) : true;
 }

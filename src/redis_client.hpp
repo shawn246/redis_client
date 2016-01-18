@@ -29,7 +29,7 @@
 #define RC_NOT_SUPPORT      -6
 #define RC_SLOT_CHANGED     -100
 
-#define RQST_RETRY_TIMES    2
+#define RQST_RETRY_TIMES    3
 #define WAIT_RETRY_TIMES    16
 
 #define FUNC_DEF_CONV       [](int nRet, redisReply *) { return nRet; }
@@ -121,6 +121,7 @@ protected:
 
 class CRedisServer
 {
+    friend class CRedisClient;
 public:
     CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNum);
     virtual ~CRedisServer();
@@ -140,7 +141,8 @@ public:
 private:
     redisContext *FetchConnection();
     void ReturnConnection(redisContext *pContext);
-    bool TryConnectSlave();
+    bool Reconnect();
+    void CleanConn();
 
 private:
     std::string m_strHost;
@@ -149,7 +151,7 @@ private:
     int m_nConnNum;
 
     std::queue<redisContext *> m_queIdleConn;
-    std::map<std::string, int> m_mapSlaveHost;
+    std::vector<std::pair<std::string, int> > m_vecHosts;
     std::mutex m_mutexConn;
 };
 
@@ -208,7 +210,7 @@ public:
     int Rename(const std::string &strKey, const std::string &strNewKey);
     int Renamenx(const std::string &strKey, const std::string &strNewKey);
     int Restore(const std::string &strKey, long nTtl, const std::string &strVal, Pipeline ppLine = nullptr);
-    //int Scan(long *pnCursor, const std::string &strPattern, long nCount, std::vector<std::string> *pvecVal);
+    int Scan(long *pnCursor, const std::string &strPattern, long nCount, std::vector<std::string> *pvecVal);
     int Ttl(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
     int Type(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
 
@@ -235,7 +237,9 @@ public:
 
     /* interfaces for list */
     int Blpop(const std::string &strKey, long nTimeout, std::vector<std::string> *pvecVal);
+    int Blpop(const std::vector<std::string> &vecKey, long nTimeout, std::vector<std::string> *pvecVal);
     int Brpop(const std::string &strKey, long nTimeout, std::vector<std::string> *pvecVal);
+    int Brpop(const std::vector<std::string> &vecKey, long nTimeout, std::vector<std::string> *pvecVal);
     int Lindex(const std::string &strKey, long nIndex, std::string *pstrVal, Pipeline ppLine = nullptr);
     int Linsert(const std::string &strKey, const std::string &strPos, const std::string &strPivot, const std::string &strVal, long *pnVal, Pipeline ppLine = nullptr);
     int Llen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
@@ -309,7 +313,7 @@ private:
 
     bool LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo);
     bool LoadClusterSlots();
-    bool WaitForReload();
+    bool WaitForRefresh();
     int Execute(CRedisCommand *pRedisCmd, Pipeline ppLine = nullptr);
     int SimpleExecute(CRedisCommand *pRedisCmd);
 
