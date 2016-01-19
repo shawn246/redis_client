@@ -1568,7 +1568,11 @@ bool CRedisClient::LoadClusterSlots()
     {
         CRedisServer *pRedisServ = m_vecRedisServ[i];
         if (!pRedisServ->IsValid())
+        {
+            for (auto pRedisServ : vecRedisServ)
+                delete pRedisServ;
             return false;
+        }
 
         CRedisServer *pSlotServ = nullptr;
         if (pRedisServ->ServRequest(&redisCmd) == RC_SUCCESS &&
@@ -1580,7 +1584,11 @@ bool CRedisClient::LoadClusterSlots()
                 {
                     pSlotServ = new CRedisServer(slotReg.strHost, slotReg.nPort, m_nTimeout, m_nConnNum);
                     if (!pSlotServ->IsValid())
+                    {
+                        for (auto pRedisServ : vecRedisServ)
+                            delete pRedisServ;
                         return false;
+                    }
                     vecRedisServ.push_back(pSlotServ);
                 }
                 slotReg.pRedisServ = pSlotServ;
