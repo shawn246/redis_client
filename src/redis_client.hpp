@@ -392,7 +392,9 @@ private:
     bool m_bCluster;
     std::vector<SlotRegion> m_vecSlot;
     std::vector<CRedisServer *> m_vecRedisServ;
+#if defined(LINUX) || defined(_LINUX)
     pthread_rwlockattr_t m_rwAttr;
+#endif
     pthread_rwlock_t m_rwLock;
     std::condition_variable_any m_condAny;
     std::thread *m_pThread;

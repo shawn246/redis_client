@@ -827,11 +827,13 @@ CRedisClient::CRedisClient(const std::string &strHost, int nPort, int nTimeout, 
     m_bValid = true;
     m_bExit = false;
 
-    pthread_rwlockattr_init(&m_rwAttr);
 #if defined(LINUX) || defined(_LINUX)
+    pthread_rwlockattr_init(&m_rwAttr);
     pthread_rwlockattr_setkind_np(&m_rwAttr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
-#endif
     pthread_rwlock_init(&m_rwLock, &m_rwAttr);
+#else
+    pthread_rwlock_init(&m_rwLock, nullptr);
+#endif
 }
 
 CRedisClient::~CRedisClient()
@@ -840,7 +842,7 @@ CRedisClient::~CRedisClient()
     m_bExit = true;
     CSafeLock safeLock(&m_rwLock);
     safeLock.WriteLock();
-    m_condAny.notify_one();
+    m_condAny.notify_all();
     safeLock.Unlock();
     if (m_pThread)
     {
@@ -849,7 +851,9 @@ CRedisClient::~CRedisClient()
     }
 
     CleanServer();
+#if defined(LINUX) || defined(_LINUX)
     pthread_rwlockattr_destroy(&m_rwAttr);
+#endif
     pthread_rwlock_destroy(&m_rwLock);
 }
 
@@ -885,15 +889,21 @@ bool CRedisClient::Initialize()
 
 void CRedisClient::operator()()
 {
+    CSafeLock safeLock(&m_rwLock);
     while (!m_bExit)
     {
-        CSafeLock safeLock(&m_rwLock);
-        safeLock.WriteLock();
-        if (m_bValid)
-            m_condAny.wait(safeLock);
+        {
+            std::unique_lock<CSafeLock> uniLock(safeLock);
+            if (m_bValid)
+            {
+                std::cout << "*************** Go to wait ***************" << std::endl;
+                m_condAny.wait(uniLock);
+            }
 
-        m_bValid = m_bCluster ? LoadClusterSlots() : m_vecRedisServ[0]->Reconnect();
-        safeLock.Unlock();
+            std::cout << "*************** Try to refresh ***************" << std::endl;
+            m_bValid = m_bCluster ? LoadClusterSlots() : m_vecRedisServ[0]->Reconnect();
+            //safeLock.Unlock();
+        }
 
         if (!m_bValid)
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1606,13 +1616,16 @@ bool CRedisClient::LoadClusterSlots()
 
 bool CRedisClient::WaitForRefresh()
 {
+    std::cout << "*************** Wait for refresh ***************" << std::endl;
     CSafeLock safeLock(&m_rwLock);
     if (safeLock.TryReadLock())
     {
-        m_condAny.notify_one();
+        std::cout << "*************** Notify one ***************" << std::endl;
+        m_condAny.notify_all();
         safeLock.Unlock();
     }
 
+    std::cout << "*************** go to sleepfor ***************" << std::endl;
     int nRetry = WAIT_RETRY_TIMES;
     while (!m_bValid && nRetry-- > 0)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
