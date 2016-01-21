@@ -13,7 +13,9 @@
 #include <thread>
 #include <condition_variable>
 #include <iostream>
+#include <algorithm>
 #include <pthread.h>
+#include <string.h>
 
 #define RC_RESULT_EOF       5
 #define RC_NO_EFFECT        4
@@ -40,20 +42,21 @@ typedef std::function<int (int, redisReply *)> TFuncConvert;
 class CSafeLock
 {
 public:
-    CSafeLock(pthread_rwlock_t *pLock) : m_pLock(pLock), m_bLock(false) {}
+    CSafeLock(pthread_rwlock_t *pLock) : m_pLock(pLock), m_bLocked(false) {}
     ~CSafeLock() { Unlock(); }
 
-    void ReadLock();
-    void WriteLock();
-    void Unlock();
-    bool TryReadLock();
-    bool TryWriteLock();
-    void lock() { WriteLock(); }
-    void unlock() { Unlock(); }
+    inline bool ReadLock() { return (m_bLocked = (pthread_rwlock_rdlock(m_pLock) == 0)); }
+    inline bool WriteLock() { return (m_bLocked = (pthread_rwlock_wrlock(m_pLock) == 0)); }
+    inline bool TryReadLock() { return (m_bLocked = (pthread_rwlock_tryrdlock(m_pLock) == 0)); }
+    inline bool TryWriteLock() { return (m_bLocked = (pthread_rwlock_trywrlock(m_pLock) == 0)); }
+    inline void Unlock() { if (m_bLocked) pthread_rwlock_unlock(m_pLock); }
+
+    inline void lock() { WriteLock(); }
+    inline void unlock() { Unlock(); }
 
 private:
     pthread_rwlock_t *m_pLock;
-    bool m_bLock;
+    bool m_bLocked;
 };
 
 class CRedisServer;
@@ -392,7 +395,7 @@ private:
     bool m_bCluster;
     std::vector<SlotRegion> m_vecSlot;
     std::vector<CRedisServer *> m_vecRedisServ;
-#if defined(LINUX) || defined(_LINUX)
+#if defined(linux) || defined(__linux) || defined(__linux__)
     pthread_rwlockattr_t m_rwAttr;
 #endif
     pthread_rwlock_t m_rwLock;
