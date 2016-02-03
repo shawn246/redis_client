@@ -96,8 +96,8 @@ bool CTestHash::Test_Hincrbyfloat()
     double dVal;
     if (m_redis.Hincrbyfloat("tk_str_1", "field_1", 4.2, &dVal) == RC_REPLY_ERR &&
         m_redis.Hincrbyfloat("tk_hash_1", "field_1", 4.2, &dVal) == RC_REPLY_ERR &&
-        m_redis.Hincrbyfloat("tk_hash_1", "field_2", 4.2, &dVal) == RC_SUCCESS && std::abs(dVal - 4.2) < 0.000001 &&
-        m_redis.Hincrbyfloat("tk_hash_1", "field_2", 5.1, &dVal) == RC_SUCCESS && std::abs(dVal - 9.3) < 0.000001 &&
+        m_redis.Hincrbyfloat("tk_hash_1", "field_2", 4.2, &dVal) == RC_SUCCESS && std::abs(dVal - 4.2) < FLOAT_ZERO &&
+        m_redis.Hincrbyfloat("tk_hash_1", "field_2", 5.1, &dVal) == RC_SUCCESS && std::abs(dVal - 9.3) < FLOAT_ZERO &&
         m_redis.Hincrby("tk_hash_1", "field_3", 3, &nVal) == RC_SUCCESS && nVal == 3 &&
         m_redis.Hincrbyfloat("tk_hash_1", "field_3", 2.7, &dVal) == RC_SUCCESS && std::abs(dVal - 5.7) < 0.000001)
         bSuccess = true;
