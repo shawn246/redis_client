@@ -6,8 +6,8 @@
 class CTestHash : public CTestClient
 {
 public:
-    CTestHash(const std::string &strHost);
-    bool StartTest();
+    CTestHash();
+    bool StartTest(const std::string &strHost);
 
     bool Test_Hdel();
     bool Test_Hexists();

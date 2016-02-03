@@ -1,12 +1,14 @@
 #include "TestConcur.hpp"
 
-CTestConcur::CTestConcur(const std::string &strHost) : CTestClient(strHost, 100)
+#define NUM_DEF 150
+
+CTestConcur::CTestConcur()
 {
 }
 
-bool CTestConcur::StartTest()
+bool CTestConcur::StartTest(const std::string &strHost)
 {
-    if (!m_redis.Initialize())
+    if (!m_redis.Initialize(strHost, 6379, 2, 100))
     {
         std::cout << "Connect to redis failed" << std::endl;
         return false;
@@ -59,11 +61,13 @@ void CTestConcur::Test_GetS()
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
+
 void CTestConcur::Test_Get()
 {
     struct timeval tv;
     struct timezone tz;
     int nIndex = 1;
+    int npc = 0;
     while (!m_bExit)
     {
         std::string strVal;
@@ -73,17 +77,25 @@ void CTestConcur::Test_Get()
         if (nRet == RC_SUCCESS)
         {
             m_mutex.lock();
-            std::cout << "Get OK: " << strVal << std::endl;
+            if (++npc > NUM_DEF)
+            {
+                std::cout << "Get OK: " << strVal << std::endl;
+                npc = 0;
+            }
             m_mutex.unlock();
         }
         else
         {
             gettimeofday(&tv, &tz);
             m_mutex.lock();
-            if (nRet == RC_NO_RESOURCE)
-                std::cout << "No resource: " << tv.tv_usec << std::endl;
-            else
-                std::cout << "Get Failed: " << tv.tv_usec << std::endl;
+            if (++npc > NUM_DEF)
+            {
+                if (nRet == RC_NO_RESOURCE)
+                    std::cout << "No resource: " << tv.tv_usec << std::endl;
+                else
+                    std::cout << "Get Failed: " << tv.tv_usec << std::endl;
+                npc = 0;
+            }
             m_mutex.unlock();
             //m_bExit = true;
         }
@@ -97,6 +109,7 @@ void CTestConcur::Test_Set()
 {
     int nCounter = 2;
     int nIndex = 1;
+    int npc = 0;
     struct timeval tv;
     struct timezone tz;
     while (!m_bExit)
@@ -108,17 +121,25 @@ void CTestConcur::Test_Set()
         if (nRet == RC_SUCCESS)
         {
             m_mutex.lock();
-            std::cout << "Set OK" << std::endl;
+            if (++npc > NUM_DEF)
+            {
+                std::cout << "Set OK" << std::endl;
+                npc = 0;
+            }
             m_mutex.unlock();
         }
         else
         {
             gettimeofday(&tv, &tz);
             m_mutex.lock();
-            if (nRet == RC_NO_RESOURCE)
-                std::cout << "No resource: " << tv.tv_usec << std::endl;
-            else
-                std::cout << "Get Failed: " << tv.tv_usec << std::endl;
+            if (++npc > NUM_DEF)
+            {
+                if (nRet == RC_NO_RESOURCE)
+                    std::cout << "No resource: " << tv.tv_usec << std::endl;
+                else
+                    std::cout << "Get Failed: " << tv.tv_usec << std::endl;
+                npc = 0;
+            }
             m_mutex.unlock();
             //m_bExit = true;
         }

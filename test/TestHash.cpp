@@ -1,16 +1,14 @@
-#include <iostream>
-#include <unistd.h>
 #include "TestHash.hpp"
 
-CTestHash::CTestHash(const std::string &strHost) : CTestClient(strHost)
+CTestHash::CTestHash()
 {
 }
 
-bool CTestHash::StartTest()
+bool CTestHash::StartTest(const std::string &strHost)
 {
     bool bSuccess = false;
     std::cout << "start to test hash command" << std::endl;
-    if (!m_redis.Initialize())
+    if (!m_redis.Initialize(strHost, 6379, 2, 10))
         std::cout << "init redis client failed" << std::endl;
     else
         bSuccess = Test_Hexists() && Test_Hdel() && Test_Hgetall() && Test_Hincrby() &&
@@ -144,6 +142,7 @@ bool CTestHash::Test_Hmget()
     bool bSuccess = false;
     std::vector<std::string> vecField;
     std::vector<std::string> vecVal;
+    std::map<std::string, std::string> mapFv;
     vecField.push_back("field_1");
     vecField.push_back("field_3");
     vecField.push_back("field_10");
@@ -153,7 +152,11 @@ bool CTestHash::Test_Hmget()
         m_redis.Hmget("tk_hash_10", vecField, &vecVal) == RC_SUCCESS && vecVal.size() == 5 &&
         vecVal[0].empty() && vecVal[1].empty() && vecVal[2].empty() && vecVal[3].empty() && vecVal[4].empty() &&
         m_redis.Hmget("tk_hash_8", vecField, &vecVal) == RC_SUCCESS && vecVal.size() == 5 &&
-        vecVal[0] == "value_1" && vecVal[1] == "value_3" && vecVal[2].empty() && vecVal[3] == "value_4" && vecVal[4].empty())
+        vecVal[0] == "value_1" && vecVal[1] == "value_3" && vecVal[2].empty() && vecVal[3] == "value_4" && vecVal[4].empty() &&
+        m_redis.Hmget("tk_hash_8", vecField, &mapFv) == RC_SUCCESS && mapFv.size() == 5 &&
+        IsPairInMap(std::string("field_1"), std::string("value_1"), mapFv) && IsPairInMap(std::string("field_3"), std::string("value_3"), mapFv) &&
+        IsPairInMap(std::string("field_10"), std::string(), mapFv) && IsPairInMap(std::string("field_4"), std::string("value_4"), mapFv) &&
+        IsPairInMap(std::string("field_9"), std::string(), mapFv))
         bSuccess = true;
     return PrintResult("hmget", bSuccess);
 }
@@ -167,6 +170,7 @@ bool CTestHash::Test_Hmset()
     std::vector<std::string> vecField;
     std::vector<std::string> vecVal;
     std::vector<std::string> vecVal1;
+    std::map<std::string, std::string> mapFv1, mapFv2;
     vecField.push_back("field_1");
     vecField.push_back("field_3");
     vecField.push_back("field_10");
@@ -177,11 +181,24 @@ bool CTestHash::Test_Hmset()
     vecVal.push_back("new_10");
     vecVal.push_back("new_4");
     vecVal.push_back("new_9");
+    mapFv1.insert(std::make_pair("field_1", "new_101"));
+    mapFv1.insert(std::make_pair("field_3", "new_103"));
+    mapFv1.insert(std::make_pair("field_10", "new_110"));
+    mapFv1.insert(std::make_pair("field_4", "new_104"));
+    mapFv1.insert(std::make_pair("field_9", "new_109"));
+
     if (m_redis.Hmset("tk_str_1", vecField, vecVal) == RC_REPLY_ERR &&
         m_redis.Hmset("tk_hash_8", vecField, vecVal) == RC_SUCCESS &&
         m_redis.Hmget("tk_hash_8", vecField, &vecVal1) == RC_SUCCESS && vecVal1.size() == 5 &&
         vecVal1[0] == "new_1" && vecVal[1] == "new_3" && vecVal[2] == "new_10" &&
-        vecVal[3] == "new_4" && vecVal[4] == "new_9")
+        vecVal[3] == "new_4" && vecVal[4] == "new_9" &&
+        m_redis.Hmset("tk_hash_10", mapFv1) == RC_SUCCESS &&
+        m_redis.Hmget("tk_hash_10", vecField, &mapFv2) == RC_SUCCESS && mapFv2.size() == 5 &&
+        IsPairInMap(std::string("field_1"), std::string("new_101"), mapFv2) &&
+        IsPairInMap(std::string("field_3"), std::string("new_103"), mapFv2) &&
+        IsPairInMap(std::string("field_10"), std::string("new_110"), mapFv2) &&
+        IsPairInMap(std::string("field_4"), std::string("new_104"), mapFv2) &&
+        IsPairInMap(std::string("field_9"), std::string("new_109"), mapFv2))
         bSuccess = true;
     return PrintResult("hmset", bSuccess);
 }

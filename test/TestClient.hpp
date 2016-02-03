@@ -1,11 +1,14 @@
 #ifndef TEST_CLIENT_H
 #define TEST_CLIENT_H
 
-#include "redis_client.hpp"
+#include "RedisClient.hpp"
 #include <iostream>
 #include <unistd.h>
 #include <time.h>
 #include <cmath>
+#include <algorithm>
+
+#define FLOAT_ZERO 0.000001
 
 template <typename T>
 bool IsInContainer(const T &container, const typename T::value_type &value)
@@ -13,19 +16,28 @@ bool IsInContainer(const T &container, const typename T::value_type &value)
     return std::find(container.begin(), container.end(), value) != container.end();
 }
 
+template <typename K, typename V>
+bool IsPairInMap(const K &key, const V &val, const std::map<K, V> &mapVal)
+{
+    auto iter = mapVal.find(key);
+    if (iter == mapVal.end() || iter->second != val)
+        return false;
+    return true;
+}
+
 template <> bool IsInContainer(const std::set<std::string> &setVal, const std::string &strVal);
 
 class CTestClient
 {
 public:
-    CTestClient(const std::string &strHost, int nConnNum = 10);
+    CTestClient();
 
 protected:
     static bool PrintResult(const std::string &strCmd, bool bSuccess);
     bool InitStringEnv(int nDel, int nSet);
     bool InitListEnv(int nDel, int nSet);
     bool InitSetEnv(int nDel, int nSet);
-    bool InitSortedSetEnv(int nDel, int nSet);
+    bool InitZsetEnv(int nDel, int nSet);
     bool InitHashEnv(int nDel, int nSet);
     bool GetTime(struct timeval &tmVal);
 

@@ -6,8 +6,8 @@
 class CTestBase : public CTestClient
 {
 public:
-    CTestBase(const std::string &strHost);
-    bool StartTest();
+    CTestBase();
+    bool StartTest(const std::string &strHost);
 
 private:
     bool Test_Get();

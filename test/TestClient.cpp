@@ -1,8 +1,6 @@
 #include "TestClient.hpp"
-#include <iostream>
-#include <sstream>
 
-CTestClient::CTestClient(const std::string &strHost, int nConnNum) : m_redis(strHost, 6379, 2, nConnNum)
+CTestClient::CTestClient()
 {
 }
 
@@ -85,7 +83,7 @@ bool CTestClient::InitSetEnv(int nDel, int nSet)
     return nRet >= 0;
 }
 
-bool CTestClient::InitSortedSetEnv(int nDel, int nSet)
+bool CTestClient::InitZsetEnv(int nDel, int nSet)
 {
     int nRet = RC_SUCCESS;
     for (int i = 0; i < nDel && nRet >= 0; ++i)
@@ -103,7 +101,7 @@ bool CTestClient::InitSortedSetEnv(int nDel, int nSet)
         {
             std::stringstream ssVal;
             ssVal << "value_" << j + 1;
-            nRet = m_redis.Zadd(ssKey.str(), ssVal.str(), 1);
+            nRet = m_redis.Zadd(ssKey.str(), j + 1, ssVal.str());
         }
     }
     return nRet >= 0;

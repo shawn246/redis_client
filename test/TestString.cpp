@@ -1,16 +1,14 @@
-#include <iostream>
-#include <unistd.h>
 #include "TestString.hpp"
 
-CTestString::CTestString(const std::string &strHost) : CTestClient(strHost)
+CTestString::CTestString()
 {
 }
 
-bool CTestString::StartTest()
+bool CTestString::StartTest(const std::string &strHost)
 {
     bool bSuccess = false;
     std::cout << "start to test string command" << std::endl;
-    if (!m_redis.Initialize())
+    if (!m_redis.Initialize(strHost, 6379, 2, 10))
         std::cout << "init redis client failed" << std::endl;
     else
         bSuccess = Test_Append() && Test_Bitcount() && Test_Decr() && Test_Decrby() &&
@@ -175,9 +173,9 @@ bool CTestString::Test_Incrbyfloat()
     if (m_redis.Incrbyfloat("tk_str_1", 4.2, &dVal) == RC_REPLY_ERR &&
         m_redis.Incrbyfloat("tk_list_1", 4.2, &dVal) == RC_REPLY_ERR &&
         m_redis.Incrby("tk_str_2", 4, &nVal) == RC_SUCCESS && nVal == 4 &&
-        m_redis.Incrbyfloat("tk_str_2", 5.2, &dVal) == RC_SUCCESS && std::abs(dVal - 9.2) < 0.000001 &&
+        m_redis.Incrbyfloat("tk_str_2", 5.2, &dVal) == RC_SUCCESS && std::abs(dVal - 9.2) < FLOAT_ZERO &&
         m_redis.Set("tk_str_2", "3.4") == RC_SUCCESS &&
-        m_redis.Incrbyfloat("tk_str_2", 4.2, &dVal) == RC_SUCCESS && std::abs(dVal - 7.6) < 0.000001)
+        m_redis.Incrbyfloat("tk_str_2", 4.2, &dVal) == RC_SUCCESS && std::abs(dVal - 7.6) < FLOAT_ZERO)
         bSuccess = true;
     return PrintResult("incrbyfloat", bSuccess);
 }

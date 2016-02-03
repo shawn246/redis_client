@@ -6,8 +6,8 @@
 class CTestSet : public CTestClient
 {
 public:
-    CTestSet(const std::string &strHost);
-    bool StartTest();
+    CTestSet();
+    bool StartTest(const std::string &strHost);
 
     bool Test_Scard();
     bool Test_Sdiff();

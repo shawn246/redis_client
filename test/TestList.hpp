@@ -6,8 +6,8 @@
 class CTestList : public CTestClient
 {
 public:
-    CTestList(const std::string &strHost);
-    bool StartTest();
+    CTestList();
+    bool StartTest(const std::string &strHost);
 
     bool Test_Blpop();
     bool Test_Brpop();

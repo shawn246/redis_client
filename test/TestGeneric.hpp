@@ -1,12 +1,13 @@
 #ifndef TEST_GENERIC_H
 #define TEST_GENERIC_H
+
 #include "TestClient.hpp"
 
 class CTestGeneric : public CTestClient
 {
 public:
-    CTestGeneric(const std::string &strHost);
-    bool StartTest();
+    CTestGeneric();
+    bool StartTest(const std::string &strHost);
 
 private:
     bool Test_Del();

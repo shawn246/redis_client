@@ -6,8 +6,8 @@
 class CTestString : public CTestClient
 {
 public:
-    CTestString(const std::string &strHost);
-    bool StartTest();
+    CTestString();
+    bool StartTest(const std::string &strHost);
 
 private:
     bool Test_Append();

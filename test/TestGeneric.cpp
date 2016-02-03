@@ -1,14 +1,14 @@
 #include "TestGeneric.hpp"
 
-CTestGeneric::CTestGeneric(const std::string &strHost) : CTestClient(strHost)
+CTestGeneric::CTestGeneric()
 {
 }
 
-bool CTestGeneric::StartTest()
+bool CTestGeneric::StartTest(const std::string &strHost)
 {
     bool bSuccess = false;
     std::cout << "start to test generic command" << std::endl;
-    if (!m_redis.Initialize())
+    if (!m_redis.Initialize(strHost, 6379, 2, 10))
         std::cout << "init redis client failed" << std::endl;
     else
         bSuccess = Test_Del() && Test_Exists() && Test_Expire() && Test_Expireat() &&
@@ -348,7 +348,7 @@ bool CTestGeneric::Test_Ttl()
 bool CTestGeneric::Test_Type()
 {
     if (!InitStringEnv(2, 1) || !InitListEnv(1, 1) || !InitSetEnv(1, 1) ||
-        !InitSortedSetEnv(1, 1) || !InitHashEnv(1, 1))
+        !InitZsetEnv(1, 1) || !InitHashEnv(1, 1))
         return PrintResult("type", false);
 
     bool bSuccess = false;

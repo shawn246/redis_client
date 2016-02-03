@@ -52,7 +52,7 @@ ALL_LIB_PATH = ./lib
 
 #ALL_LIBS = pthread m rt dl memcached protobuf  wurfl xml2  tcmalloc  mysqlclient config config++
 #ALL_LIBS = pthread m dl mysqlclient hiredis rt z tcmalloc
-ALL_LIBS = hiredis
+ALL_LIBS = hiredis pthread
 
 #PATHS = .  ./include  ./common ./common/configure ./common/log ./common/message ./database ./common/sha-1  \
 #		./common/redis ./common/cjson  ./common/md5 ./common/urlencode ./interface ./tracking 

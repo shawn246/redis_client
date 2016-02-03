@@ -6,8 +6,8 @@
 class CTestConcur : public CTestClient
 {
 public:
-    CTestConcur(const std::string &strHost);
-    bool StartTest();
+    CTestConcur();
+    bool StartTest(const std::string &strHost);
 
 private:
     void Test_GetS();

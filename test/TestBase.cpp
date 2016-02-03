@@ -1,14 +1,14 @@
 #include "TestBase.hpp"
 
-CTestBase::CTestBase(const std::string &strHost) : CTestClient(strHost)
+CTestBase::CTestBase()
 {
 }
 
-bool CTestBase::StartTest()
+bool CTestBase::StartTest(const std::string &strHost)
 {
     bool bSuccess = false;
     std::cout << "start to test base command" << std::endl;
-    if (!m_redis.Initialize())
+    if (!m_redis.Initialize(strHost, 6379, 2, 10))
         std::cout << "initialize redis client failed" << std::endl;
     else
         bSuccess = Test_Set() && Test_Lpush() && Test_Rpush() && Test_Sadd() &&
@@ -131,7 +131,7 @@ bool CTestBase::Test_Sadd()
     bool bSuccess = false;
     std::vector<std::string> vecVal;
     if (m_redis.Sadd("tk_str_1", "value_1") == RC_REPLY_ERR &&
-        m_redis.Sadd("tk_set_8", "value_2") == RC_OBJ_EXIST &&
+        m_redis.Sadd("tk_set_8", "value_2") == RC_SUCCESS &&
         m_redis.Sadd("tk_set_8", "value_10") == RC_SUCCESS &&
         m_redis.Smembers("tk_set_8", &vecVal) == RC_SUCCESS &&
         vecVal.size() == 9 && IsInContainer(vecVal, "value_10") &&
@@ -177,17 +177,17 @@ bool CTestBase::Test_Smembers()
 
 bool CTestBase::Test_Zadd()
 {
-    if (!InitStringEnv(1, 1) || !InitSortedSetEnv(10, 9))
+    if (!InitStringEnv(1, 1) || !InitZsetEnv(10, 9))
         return PrintResult("zadd", false);
 
     bool bSuccess = false;
     std::vector<std::string> vecVal;
-    if (m_redis.Zadd("tk_str_1", "value_1", 1) == RC_REPLY_ERR &&
-        m_redis.Zadd("tk_zset_8", "value_2", 1) == RC_OBJ_EXIST &&
-        m_redis.Zadd("tk_zset_8", "value_10", 1) == RC_SUCCESS &&
+    if (m_redis.Zadd("tk_str_1", 1, "value_1") == RC_REPLY_ERR &&
+        m_redis.Zadd("tk_zset_8", 1, "value_2") == RC_SUCCESS &&
+        m_redis.Zadd("tk_zset_8", 1, "value_10") == RC_SUCCESS &&
         m_redis.Zrange("tk_zset_8", 0, -1, &vecVal) == RC_SUCCESS &&
         vecVal.size() == 9 && IsInContainer(vecVal, "value_10") &&
-        m_redis.Zadd("tk_zset_10", "value_1", 1) == RC_SUCCESS &&
+        m_redis.Zadd("tk_zset_10", 1, "value_1") == RC_SUCCESS &&
         m_redis.Zrange("tk_zset_10", 0, -1, &vecVal) == RC_SUCCESS &&
         vecVal.size() == 1 && IsInContainer(vecVal, "value_1"))
         bSuccess = true;
@@ -196,7 +196,7 @@ bool CTestBase::Test_Zadd()
 
 bool CTestBase::Test_Zrange()
 {
-    if (!InitStringEnv(1, 1) || !InitSortedSetEnv(10, 9))
+    if (!InitStringEnv(1, 1) || !InitZsetEnv(10, 9))
         return PrintResult("zrange", false);
 
     bool bSuccess = false;
@@ -204,13 +204,12 @@ bool CTestBase::Test_Zrange()
     if (m_redis.Zrange("tk_str_1", 0, -1, &vecVal) == RC_REPLY_ERR &&
         m_redis.Zrange("tk_zset_10", 0, -1, &vecVal) == RC_SUCCESS && vecVal.size() == 0 &&
         m_redis.Zrange("tk_zset_3", 0, -1, &vecVal) == RC_SUCCESS && vecVal.size() == 3 &&
-        IsInContainer(vecVal, "value_1") && IsInContainer(vecVal, "value_2") && IsInContainer(vecVal, "value_3") &&
+        vecVal[0] == "value_1" && vecVal[1] == "value_2" && vecVal[2] == "value_3" &&
         m_redis.Zrange("tk_zset_9", 5, 7, &vecVal) == RC_SUCCESS && vecVal.size() == 3 &&
-        IsInContainer(vecVal, "value_6") && IsInContainer(vecVal, "value_7") && IsInContainer(vecVal, "value_8") &&
+        vecVal[0] == "value_6" && vecVal[1] == "value_7" && vecVal[2] == "value_8" &&
         m_redis.Zrange("tk_zset_9", 7, 100, &vecVal) == RC_SUCCESS && vecVal.size() == 2 &&
-        IsInContainer(vecVal, "value_8") && IsInContainer(vecVal, "value_9"))
+        vecVal[0] == "value_8" && vecVal[1] == "value_9")
         bSuccess = true;
     return PrintResult("zrange", bSuccess);
-
 }
 
