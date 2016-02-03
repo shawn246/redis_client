@@ -1,30 +1,14 @@
-#########################################################################
-#                                                                        #
-#    makefile of jarkaslab for linux OS                  				#
-#                                                                        #
-#    Added by ansen in 2015-02-10                   					#
-#                                                                        #
-##########################################################################
-
 RM = rm -f
-
 MAKE = make
-
 COPY = cp
-
 CC = g++
-
 export CC
-
 AR = ar
-
 PS = cpp
-
 LIBEXT = a
 
 #CFLAGS = -rdynamic -Wall -m64  -pipe -fopenmp  -std=c++11
 CFLAGS = -Wall -m64 -pipe -std=c++11
-
 export CFLAGS
 
 #RELEASE_FLAGS = -O2 -Wno-deprecated	
@@ -48,7 +32,11 @@ LIBFLAGS =  rcs
 
 ALL_INCLUDE = . ./common /usr/local/mysql/include
 
-ALL_LIB_PATH = ./lib
+ifeq ($(shell uname), Darwin)
+	ALL_LIB_PATH = ./lib/mac
+else
+	ALL_LIB_PATH = ./lib/linux
+endif
 
 #ALL_LIBS = pthread m rt dl memcached protobuf  wurfl xml2  tcmalloc  mysqlclient config config++
 #ALL_LIBS = pthread m dl mysqlclient hiredis rt z tcmalloc
