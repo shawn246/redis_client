@@ -56,7 +56,7 @@ ALL_LIBS = hiredis pthread
 
 #PATHS = .  ./include  ./common ./common/configure ./common/log ./common/message ./database ./common/sha-1  \
 #		./common/redis ./common/cjson  ./common/md5 ./common/urlencode ./interface ./tracking 
-PATHS = .
+PATHS = . ../src
 
 SOURCES = $(foreach dir, $(PATHS), $(wildcard $(dir)/*.$(PS)))
 

@@ -1,7 +1,7 @@
 #ifndef TEST_CLIENT_H
 #define TEST_CLIENT_H
 
-#include "RedisClient.hpp"
+#include "../src/RedisClient.hpp"
 #include <iostream>
 #include <unistd.h>
 #include <time.h>
