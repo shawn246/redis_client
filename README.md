@@ -6,6 +6,7 @@
 - Use connection pool.
 - Thread safe.
 - Reconnect automatically.
+- Do not support windows yet. Find a read-write lock to replace the 'pthread_rwlock_t' if you want to use this on windows:)
 - (Thanks for the Brian's help.)
 
 # TODO
