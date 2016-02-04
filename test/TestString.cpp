@@ -196,7 +196,7 @@ bool CTestString::Test_Mget()
     vecKey.push_back("tk_str_6");
     vecKey.push_back("tk_list_1");
     vecKey.push_back("tk_str_4");
-    if (m_redis.Mget(vecKey, &vecVal) == RC_PART_SUCCESS && vecKey.size() == vecVal.size() &&
+    if (m_redis.Mget(vecKey, &vecVal) == RC_SUCCESS && vecKey.size() == vecVal.size() &&
         vecVal[2] == "" && vecVal[6] == "" && vecVal[0] == "value_1" && vecVal[3] == "value_3" &&
         vecVal[5] == "value_6")
         bSuccess = true;
