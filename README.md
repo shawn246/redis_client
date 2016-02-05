@@ -1,5 +1,6 @@
 # Description
 
+- Only two files included. One hpp file and one cpp file.
 - Depend on hiredis.
 - Support both single node mode and cluster mode.
 - Support pipeline.
