@@ -1102,15 +1102,12 @@ int CRedisClient::Mget(const std::vector<std::string> &vecKey, std::vector<std::
             {
                 if (nSubRet == RC_SUCCESS)
                     pvecVal->push_back(strVal);
-                else if (nSubRet == RC_RQST_ERR)
+                else if (nSubRet == RC_REPLY_ERR)
+                    pvecVal->push_back("");
+                else
                 {
                     nRet = nSubRet;
                     break;
-                }
-                else
-                {
-                    pvecVal->push_back("");
-                    nRet = RC_PART_SUCCESS;
                 }
             }
         }
