@@ -1385,14 +1385,23 @@ int CRedisClient::Hmget(const std::string &strKey, const std::vector<std::string
     int nRet = ExecuteImpl("hmget", strKey, vecField, HASH_SLOT(strKey), nullptr, BIND_VSTR(&vecVal));
     if (nRet == RC_SUCCESS)
     {
-        if (vecVal.size() != vecField.size())
-            nRet =  RC_RQST_ERR;
+        if (!vecVal.empty() && vecField.size() != vecVal.size())
+            nRet = RC_RQST_ERR;
         else if (pmapVal)
         {
-            auto it1 = vecField.begin();
-            auto it2 = vecVal.begin();
-            while (it1 != vecField.end())
-                pmapVal->insert(std::make_pair(*it1++, *it2++));
+            pmapVal->clear();
+            if (!vecVal.empty())
+            {
+                auto it1 = vecField.begin();
+                auto it2 = vecVal.begin();
+                while (it1 != vecField.end())
+                {
+                    if (!((*it2).empty()))
+                        pmapVal->insert(std::make_pair(*it1, *it2));
+                    ++it1;
+                    ++it2;
+                }
+            }
         }
     }
     return nRet;
@@ -1412,7 +1421,12 @@ int CRedisClient::Hmget(const std::string &strKey, const std::set<std::string> &
             auto it1 = setField.begin();
             auto it2 = vecVal.begin();
             while (it1 != setField.end())
-                pmapVal->insert(std::make_pair(*it1++, *it2++));
+            {
+                if (!((*it2).empty()))
+                    pmapVal->insert(std::make_pair(*it1, *it2));
+                ++it1;
+                ++it2;
+            }
         }
     }
     return nRet;
