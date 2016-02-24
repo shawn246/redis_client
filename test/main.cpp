@@ -16,37 +16,37 @@ int main(int argc, char **argv)
 
     while (1)
     {
-        //CTestBase testBase;
-        //if (!testBase.StartTest(strHost))
-        //    break;
-
-        //CTestGeneric testKeys;
-        //if (!testKeys.StartTest(strHost))
-        //    break;
-
-        //CTestString testStr;
-        //if (!testStr.StartTest(strHost))
-        //    break;
-
-        //CTestList testList;
-        //if (!testList.StartTest(strHost))
-        //    break;
-
-        //CTestSet testSet;
-        //if (!testSet.StartTest(strHost))
-        //    break;
-
-        //CTestHash testHash;
-        //if (!testHash.StartTest(strHost))
-        //    break;
-
-        //CTestZset testZset;
-        //if (!testZset.StartTest(strHost))
-        //    break;
-
-        CTestConcur testConcur;
-        if (!testConcur.StartTest(strHost))
+        CTestBase testBase;
+        if (!testBase.StartTest(strHost))
             break;
+
+        CTestGeneric testKeys;
+        if (!testKeys.StartTest(strHost))
+            break;
+
+        CTestString testStr;
+        if (!testStr.StartTest(strHost))
+            break;
+
+        CTestList testList;
+        if (!testList.StartTest(strHost))
+            break;
+
+        CTestSet testSet;
+        if (!testSet.StartTest(strHost))
+            break;
+
+        CTestHash testHash;
+        if (!testHash.StartTest(strHost))
+            break;
+
+        CTestZset testZset;
+        if (!testZset.StartTest(strHost))
+            break;
+
+        //CTestConcur testConcur;
+        //if (!testConcur.StartTest(strHost))
+        //    break;
 
         break;
     }

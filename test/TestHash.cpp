@@ -153,10 +153,10 @@ bool CTestHash::Test_Hmget()
         vecVal[0].empty() && vecVal[1].empty() && vecVal[2].empty() && vecVal[3].empty() && vecVal[4].empty() &&
         m_redis.Hmget("tk_hash_8", vecField, &vecVal) == RC_SUCCESS && vecVal.size() == 5 &&
         vecVal[0] == "value_1" && vecVal[1] == "value_3" && vecVal[2].empty() && vecVal[3] == "value_4" && vecVal[4].empty() &&
-        m_redis.Hmget("tk_hash_8", vecField, &mapFv) == RC_SUCCESS && mapFv.size() == 5 &&
-        IsPairInMap(std::string("field_1"), std::string("value_1"), mapFv) && IsPairInMap(std::string("field_3"), std::string("value_3"), mapFv) &&
-        IsPairInMap(std::string("field_10"), std::string(), mapFv) && IsPairInMap(std::string("field_4"), std::string("value_4"), mapFv) &&
-        IsPairInMap(std::string("field_9"), std::string(), mapFv))
+        m_redis.Hmget("tk_hash_8", vecField, &mapFv) == RC_SUCCESS && mapFv.size() == 3 &&
+        IsPairInMap(std::string("field_1"), std::string("value_1"), mapFv) &&
+        IsPairInMap(std::string("field_3"), std::string("value_3"), mapFv) &&
+        IsPairInMap(std::string("field_4"), std::string("value_4"), mapFv))
         bSuccess = true;
     return PrintResult("hmget", bSuccess);
 }

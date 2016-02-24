@@ -32,7 +32,7 @@
 #define RC_SLOT_CHANGED     -100
 
 #define RQST_RETRY_TIMES    3
-#define WAIT_RETRY_TIMES    16
+#define WAIT_RETRY_TIMES    60
 
 #define FUNC_DEF_CONV       [](int nRet, redisReply *) { return nRet; }
 
@@ -123,8 +123,29 @@ protected:
     TFuncConvert m_funcConv;
 };
 
+class CRedisServer;
+class CRedisConnection
+{
+public:
+    CRedisConnection(CRedisServer *pRedisServ);
+
+    bool IsValid() { return m_pContext != nullptr; }
+    int ConnRequest(CRedisCommand *pRedisCmd);
+    int ConnRequest(std::vector<CRedisCommand *> &vecRedisCmd);
+
+private:
+    bool ConnectToRedis(const std::string &strHost, int nPort, int nTimeout);
+    bool Reconnect();
+
+private:
+    redisContext *m_pContext;
+    time_t m_nUseTime;
+    CRedisServer *m_pRedisServ;
+};
+
 class CRedisServer
 {
+    friend class CRedisConnection;
     friend class CRedisClient;
 public:
     CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNum);
@@ -143,18 +164,19 @@ public:
     int ServRequest(std::vector<CRedisCommand *> &vecRedisCmd);
 
 private:
-    redisContext *FetchConnection();
-    void ReturnConnection(redisContext *pContext);
-    bool Reconnect();
+    bool Initialize();
+    CRedisConnection *FetchConnection();
+    void ReturnConnection(CRedisConnection *pRedisConn);
     void CleanConn();
 
 private:
     std::string m_strHost;
     int m_nPort;
-    int m_nTimeout;
+    int m_nCliTimeout;
+    int m_nSerTimeout;
     int m_nConnNum;
 
-    std::queue<redisContext *> m_queIdleConn;
+    std::queue<CRedisConnection *> m_queIdleConn;
     std::vector<std::pair<std::string, int> > m_vecHosts;
     std::mutex m_mutexConn;
 };
