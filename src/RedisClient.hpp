@@ -34,11 +34,6 @@
 #define RQST_RETRY_TIMES    3
 #define WAIT_RETRY_TIMES    60
 
-#define FUNC_DEF_CONV       [](int nRet, redisReply *) { return nRet; }
-
-typedef std::function<int (redisReply *)> TFuncFetch;
-typedef std::function<int (int, redisReply *)> TFuncConvert;
-
 class CSafeLock
 {
 public:
@@ -64,63 +59,89 @@ struct SlotRegion
 {
     int nStartSlot;
     int nEndSlot;
-    std::string strHost;
-    int nPort;
+    std::vector<std::pair<std::string, int> > vecHost;
     CRedisServer *pRedisServ;
 };
 
-class CRedisCommand
+template <typename T>
+class CRedisReply
 {
 public:
-    CRedisCommand(const std::string &strCmd, bool bShareMem = true);
+    CRedisReply(std::function<void (T *)> &funcConv)
+        : m_nErrCode(RC_SUCCESS), m_pReply(nullptr), m_funcConv(funcConv) {}
+    ~CRedisReply()
+    {
+        if (m_pReply)
+            freeReplyObject(m_pReply);
+    }
+
+    int GetErrCode() const { return m_nErrCode; }
+    std::string GetErrMsg() const { return m_strErrMsg; }
+    redisReply *GetReply() const { return m_pReply; }
+    R & GetResult() const { return m_resVal; }
+
+protected:
+    bool SetErrInfo(int nErrCode, std::string strErrMsg = "")
+    {
+        if (nErrCode == RC_REPLY_ERR && strErrMsg.substr(0, 5) == "MOVED")
+            nErrCode = RC_MOVED_ERR;
+        m_nErrCode = nErrCode;
+        m_strErrMsg = strErrMsg;
+        return m_nErrCode == RC_SUCCESS;
+    }
+
+    bool ParseReply()
+    {
+        if (!m_pReply)
+            return SetErrInfo(RC_RQST_ERR, "Request failed");
+
+        if (m_pReply->REDIS_REPLY_ERROR)
+            return SetErrInfo(RC_REPLY_ERR, m_pReply->str);
+
+        m_funcConv(m_resVal, m_nErrCode, m_strErrMsg);
+        return SetErrInfo(m_nErrCode, m_strErrMsg);
+    }
+
+protected:
+    int m_nErrCode;
+    std::string m_strErrMsg;
+    redisReply *m_pReply;
+    T m_resVal;
+    std::function<void (T *)> m_funcConv;
+};
+
+template <typename T>
+class CRedisCommand : public CRedisReply<T>
+{
+public:
+    CRedisCommand(const std::vector<std::string> &vecParam, std::function<void (T *)> funcConv)
+        : CRedisReply<T>(funcConv), m_nArgs(0), m_pszArgs(nullptr), m_pnArgsLen(nullptr) {}
     virtual ~CRedisCommand() { ClearArgs(); }
-    void ClearArgs();
-    void DumpArgs() const;
-    void DumpReply() const;
-
-    int GetSlot() const { return m_nSlot; }
-    const redisReply * GetReply() const { return m_pReply; }
-    std::string FetchErrMsg() const;
-    bool IsMovedErr() const;
-
-    void SetSlot(int nSlot) { m_nSlot = nSlot; }
-    void SetConvFunc(TFuncConvert funcConv) { m_funcConv = funcConv; }
-
-    void SetArgs();
-    void SetArgs(const std::string &strArg);
-    void SetArgs(const std::vector<std::string> &vecArg);
-    void SetArgs(const std::string &strArg1, const std::string &strArg2);
-    void SetArgs(const std::string &strArg1, const std::vector<std::string> &vecArg2);
-    void SetArgs(const std::string &strArg1, const std::set<std::string> &setArg2);
-    void SetArgs(const std::vector<std::string> &vecArg1, const std::string &strArg2);
-    void SetArgs(const std::vector<std::string> &vecArg1, const std::vector<std::string> &vecArg2);
-    void SetArgs(const std::map<std::string, std::string> &mapArg);
-    void SetArgs(const std::string &strArg1, const std::map<std::string, std::string> &mapArg2);
-    void SetArgs(const std::string &strArg1, const std::string &strArg2, const std::string &strArg3);
-    void SetArgs(const std::string &strArg1, const std::vector<std::string> &vecArg2, const std::vector<std::string> &vecArg3);
-    void SetArgs(const std::string &strArg1, const std::string &strArg2, const std::string &strArg3, const std::string &strArg4);
 
     int CmdRequest(redisContext *pContext);
     int CmdAppend(redisContext *pContext);
     int CmdReply(redisContext *pContext);
-    int FetchResult(const TFuncFetch &funcFetch);
-
-private:
-    void InitMemory(int nArgs);
-    void AppendValue(const std::string &strVal);
 
 protected:
-    std::string m_strCmd;
-    bool m_bShareMem;
+    void ClearArgs()
+    {
+        if (m_pszArgs)
+        {
+            for (int i = 0; i < m_nArgs; ++i)
+                delete [] m_pszArgs[i];
+            delete [] m_pszArgs;
+        }
+        if (m_pnArgsLen)
+            delete [] m_pnArgsLen;
+        m_pszArgs = nullptr;
+        m_pnArgsLen = nullptr;
+        m_nArgs = 0;
+    }
 
+protecte:
     int m_nArgs;
-    int m_nIdx;
     char **m_pszArgs;
     size_t *m_pnArgsLen;
-    redisReply *m_pReply;
-
-    int m_nSlot;
-    TFuncConvert m_funcConv;
 };
 
 class CRedisServer;
@@ -425,6 +446,56 @@ private:
             delete pRedisCmd;
         return nRet;
     }
+
+private:
+    std::string m_strHost;
+    int m_nPort;
+    int m_nTimeout;
+    int m_nConnNum;
+    bool m_bCluster;
+    bool m_bValid;
+    bool m_bExit;
+
+    std::vector<SlotRegion> m_vecSlot;
+    std::vector<CRedisServer *> m_vecRedisServ;
+
+#if defined(linux) || defined(__linux) || defined(__linux__)
+    pthread_rwlockattr_t m_rwAttr;
+#endif
+    pthread_rwlock_t m_rwLock;
+    std::condition_variable_any m_condAny;
+    std::thread *m_pThread;
+};
+
+class CRedisClient
+{
+public:
+    CRedisClient();
+    ~CRedisClient();
+
+    bool Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNum);
+    bool IsCluster() { return m_bCluster; }
+
+    bool Request(CRedisCommand *pRedisCmd);
+    bool Request(CRedisPipeline *pRedisPipe);
+
+private:
+    void operator()();
+
+    void CleanServer();
+    CRedisServer * MatchServer(int nSlot) const;
+    CRedisServer * FindServer(int nSlot) const;
+
+    bool LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo);
+    bool LoadClusterSlots();
+    bool WaitForRefresh();
+
+    bool OnSameServer(const std::string &strKey1, const std::string &strKey2) const;
+    bool OnSameServer(const std::vector<std::string> &vecKey) const;
+
+private:
+    static bool ConvertInfoToMap(const std::string &strVal, std::map<std::string, std::string> &mapVal);
+    static CRedisServer * FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort) const;
 
 private:
     std::string m_strHost;
