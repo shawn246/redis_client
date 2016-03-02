@@ -4,9 +4,7 @@
 #include "redis/hiredis.h"
 #include <string>
 #include <vector>
-#include <list>
 #include <map>
-#include <set>
 #include <queue>
 #include <sstream>
 #include <functional>
@@ -17,22 +15,148 @@
 #include <pthread.h>
 #include <string.h>
 
-#define RC_RESULT_EOF       5
-#define RC_NO_EFFECT        4
-#define RC_OBJ_NOT_EXIST    3
-#define RC_OBJ_EXIST        2
-#define RC_PART_SUCCESS     1
+#define RC_REPLY_NIL        1
 #define RC_SUCCESS          0
-#define RC_PARAM_ERR        -1
-#define RC_REPLY_ERR        -2
-#define RC_RQST_ERR         -3
-#define RC_NO_RESOURCE      -4
-#define RC_PIPELINE_ERR     -5
-#define RC_NOT_SUPPORT      -6
-#define RC_SLOT_CHANGED     -100
+#define RC_REPLY_ERR        -1
+#define RC_RQST_ERR         -2
+#define RC_MOVED_ERR        -3
 
 #define RQST_RETRY_TIMES    3
 #define WAIT_RETRY_TIMES    60
+
+typedef std::vector<std::string> VECSTR;
+
+uint32_t HASH_SLOT(const std::string &strKey);
+
+class CRedisServer;
+struct SlotRegion
+{
+    int nStartSlot;
+    int nEndSlot;
+    std::vector<std::pair<std::string, int> > vecHost;
+    CRedisServer *pRedisServ;
+};
+
+static inline bool FetchInteger(redisReply *pReply, long &nVal)
+{
+    if (pReply->type == REDIS_REPLY_INTEGER)
+    {
+        nVal = pReply->integer;
+        return true;
+    }
+    return false;
+}
+
+static inline bool FetchString(redisReply *pReply, std::string &strVal)
+{
+    if (pReply->type == REDIS_REPLY_STRING || pReply->type == REDIS_REPLY_STATUS)
+    {
+        strVal.assign(pReply->str, pReply->len);
+        return true;
+    }
+    return false;
+}
+
+static inline bool FetchStringArray(redisReply *pReply, std::vector<std::string> &vecStrVal)
+{
+    if (pReply->type == REDIS_REPLY_ARRAY)
+    {
+        std::string strVal;
+        vecStrVal.clear();
+        for (size_t i = 0; i < pReply->elements; ++i)
+        {
+            if (pReply->element[i]->type == REDIS_REPLY_STRING ||
+                pReply->element[i]->type == REDIS_REPLY_STATUS)
+                strVal.assign(pReply->element[i]->str, pReply->element[i]->len);
+            else if (pReply->element[i]->type == REDIS_REPLY_NIL)
+                strVal.clear();
+            else
+                return false;
+
+            vecStrVal.push_back(strVal);
+        }
+        return true;
+    }
+    return false;
+}
+
+static inline bool FetchStringMap(redisReply *pReply, std::map<std::string, std::string> &mapStrVal)
+{
+    if (pReply->type == REDIS_REPLY_ARRAY)
+    {
+        if ((pReply->elements % 2) != 0)
+            return false;
+
+        std::string strKey;
+        std::string strVal;
+        mapStrVal.clear();
+        for (size_t i = 0; i < pReply->elements; )
+        {
+            if (pReply->element[i]->type == REDIS_REPLY_STRING ||
+                pReply->element[i]->type == REDIS_REPLY_STATUS)
+                strKey.assign(pReply->element[i]->str, pReply->element[i]->len);
+            else if (pReply->element[i]->type == REDIS_REPLY_NIL)
+                strKey.clear();
+            else
+                return false;
+
+            if (pReply->element[i + 1]->type == REDIS_REPLY_STRING ||
+                pReply->element[i + 1]->type == REDIS_REPLY_STATUS)
+                strVal.assign(pReply->element[i + 1]->str, pReply->element[i + 1]->len);
+            else if (pReply->element[i + 1]->type == REDIS_REPLY_NIL)
+                strVal.clear();
+            else
+                return false;
+
+            mapStrVal.insert(std::make_pair(strKey, strVal));
+        }
+        return true;
+    }
+    return false;
+}
+
+static inline bool FetchTime(redisReply *pReply, struct timeval &tmVal)
+{
+    if (pReply->type == REDIS_REPLY_ARRAY)
+    {
+        if (pReply->elements != 2 || pReply->element[0]->type != REDIS_REPLY_STRING ||
+            pReply->element[1]->type != REDIS_REPLY_STRING)
+            return false;
+
+        tmVal.tv_sec = atol(pReply->element[0]->str);
+        tmVal.tv_usec = atol(pReply->element[1]->str);
+        return true;
+    }
+    return false;
+}
+
+static inline bool FetchSlot(redisReply *pReply, std::vector<SlotRegion> &vecSlot)
+{
+    if (pReply->type == REDIS_REPLY_ARRAY)
+    {
+        vecSlot.clear();
+        for (size_t i = 0; i < pReply->elements; ++i)
+        {
+            SlotRegion slotReg;
+            redisReply *pSubReply = pReply->element[i];
+            if (pSubReply->type != REDIS_REPLY_ARRAY || pSubReply->elements < 3)
+                return false;
+
+            slotReg.nStartSlot = pSubReply->element[0]->integer;
+            slotReg.nEndSlot = pSubReply->element[1]->integer;
+            slotReg.pRedisServ = nullptr;
+            for (int i = 2; i < pSubReply->elements; ++i)
+            {
+                std::string strHost = pSubReply->element[i]->element[0]->str;
+                int nPort = pSubReply->element[i]->element[1]->integer;
+                slotReg.vecHost.push_back(std::make_pair(strHost, nPort));
+            }
+            vecSlot.push_back(slotReg);
+        }
+        return true;
+    }
+    return false;
+}
 
 class CSafeLock
 {
@@ -54,34 +178,10 @@ private:
     bool m_bLocked;
 };
 
-class CRedisServer;
-struct SlotRegion
-{
-    int nStartSlot;
-    int nEndSlot;
-    std::vector<std::pair<std::string, int> > vecHost;
-    CRedisServer *pRedisServ;
-};
-
-template <typename T>
-class CRedisReply
+class CRedisError
 {
 public:
-    CRedisReply(std::function<void (T *)> &funcConv)
-        : m_nErrCode(RC_SUCCESS), m_pReply(nullptr), m_funcConv(funcConv) {}
-    ~CRedisReply()
-    {
-        if (m_pReply)
-            freeReplyObject(m_pReply);
-    }
-
-    int GetErrCode() const { return m_nErrCode; }
-    std::string GetErrMsg() const { return m_strErrMsg; }
-    redisReply *GetReply() const { return m_pReply; }
-    R & GetResult() const { return m_resVal; }
-
-protected:
-    bool SetErrInfo(int nErrCode, std::string strErrMsg = "")
+    bool SetErrInfo(int nErrCode, const std::string &strErrMsg = "")
     {
         if (nErrCode == RC_REPLY_ERR && strErrMsg.substr(0, 5) == "MOVED")
             nErrCode = RC_MOVED_ERR;
@@ -90,37 +190,141 @@ protected:
         return m_nErrCode == RC_SUCCESS;
     }
 
-    bool ParseReply()
-    {
-        if (!m_pReply)
-            return SetErrInfo(RC_RQST_ERR, "Request failed");
+    int GetErrCode() const { return m_nErrCode; }
+    std::string GetErrMsg() const { return m_strErrMsg; }
 
-        if (m_pReply->REDIS_REPLY_ERROR)
-            return SetErrInfo(RC_REPLY_ERR, m_pReply->str);
-
-        m_funcConv(m_resVal, m_nErrCode, m_strErrMsg);
-        return SetErrInfo(m_nErrCode, m_strErrMsg);
-    }
+protected:
+    CRedisError() : m_nErrCode(RC_SUCCESS) {}
 
 protected:
     int m_nErrCode;
     std::string m_strErrMsg;
-    redisReply *m_pReply;
-    T m_resVal;
-    std::function<void (T *)> m_funcConv;
+};
+
+class CRedisCommand : public CRedisError
+{
+public:
+    virtual bool CmdRequest(redisContext *pContext) { return false; }
+    virtual bool CmdAppend(redisContext *pContext) { return false; }
+    virtual bool CmdReply(redisContext *pContext) { return false; }
+    virtual int GetSlot() const { return -1; }
 };
 
 template <typename T>
-class CRedisCommand : public CRedisReply<T>
+class CRedisReply : public CRedisCommand
 {
 public:
-    CRedisCommand(const std::vector<std::string> &vecParam, std::function<void (T *)> funcConv)
-        : CRedisReply<T>(funcConv), m_nArgs(0), m_pszArgs(nullptr), m_pnArgsLen(nullptr) {}
-    virtual ~CRedisCommand() { ClearArgs(); }
+    CRedisReply(std::function<bool (redisReply *, T &)> funcConv) : m_pReply(nullptr), m_funcConv(funcConv) {}
+    ~CRedisReply()
+    {
+        if (m_pReply)
+            freeReplyObject(m_pReply);
+    }
 
-    int CmdRequest(redisContext *pContext);
-    int CmdAppend(redisContext *pContext);
-    int CmdReply(redisContext *pContext);
+    redisReply *GetReply() const { return m_pReply; }
+    T & GetResult() { return m_resVal; }
+    const T & GetResult() const { return m_resVal; }
+
+    void DumpReply(std::ostream &os) const
+    {
+        if (!m_pReply)
+            os << "no reply" << std::endl;
+        else
+            os << m_pReply;
+    }
+
+public:
+    bool ParseReply()
+    {
+        if (!m_pReply)
+            return SetErrInfo(RC_RQST_ERR, "Request failed");
+        else if (m_pReply->type == REDIS_REPLY_ERROR)
+            return SetErrInfo(RC_REPLY_ERR, m_pReply->str);
+        else if (m_pReply->type == REDIS_REPLY_NIL)
+        {
+            m_bNil = true;
+            return true;
+        }
+        return m_funcConv(m_pReply, m_resVal) ? true : SetErrInfo(RC_REPLY_ERR, "Parse reply failed");
+    }
+
+public:
+    redisReply *m_pReply;
+    T m_resVal;
+    bool m_bNil;
+    std::function<bool (redisReply *, T &)> m_funcConv;
+};
+
+template <typename T>
+class CRedisCommandImpl : public CRedisReply<T>
+{
+public:
+    CRedisCommandImpl(const VECSTR &vecParams, std::function<bool (redisReply *, T &)> funcConv, int nSlot = -1)
+        : CRedisReply<T>(funcConv), m_pszArgs(nullptr), m_pnArgsLen(nullptr), m_nSlot(nSlot)
+    {
+        m_nArgs = vecParams.size();
+        if (m_nArgs > 0)
+        {
+            m_pszArgs = new char *[m_nArgs];
+            m_pnArgsLen = new size_t[m_nArgs];
+            for (size_t i = 0; i < m_nArgs; ++i)
+            {
+                m_pszArgs[i] = new char[vecParams[i].size()];
+                memcpy(m_pszArgs[i], vecParams[i].data(), vecParams[i].size());
+                m_pnArgsLen[i] = vecParams[i].size();
+            }
+        }
+    }
+    virtual ~CRedisCommandImpl() { ClearArgs(); }
+
+    virtual int GetSlot() const { return m_nSlot; }
+
+    virtual bool CmdRequest(redisContext *pContext)
+    {
+        if (m_nArgs <= 0)
+            return this->SetErrInfo(RC_RQST_ERR, "Invalid parameters");
+
+        if (!pContext)
+            return this->SetErrInfo(RC_RQST_ERR, "Invalid connection");
+
+        this->m_pReply = static_cast<redisReply *>(redisCommandArgv(pContext, m_nArgs,
+                                             (const char **)m_pszArgs, (const size_t *)m_pnArgsLen));
+        return this->ParseReply();
+    }
+
+    virtual bool CmdAppend(redisContext *pContext)
+    {
+        if (m_nArgs <= 0)
+            return this->SetErrInfo(RC_RQST_ERR, "Invalid parameters");
+
+        if (!pContext)
+            return this->SetErrInfo(RC_RQST_ERR, "Invalid connection");
+
+        int nRet = redisAppendCommandArgv(pContext, m_nArgs, (const char **)m_pszArgs, (const size_t *)m_pnArgsLen);
+        return nRet == REDIS_OK ? this->SetErrInfo(RC_SUCCESS) : this->SetErrInfo(RC_RQST_ERR, pContext->errstr);
+    }
+
+    virtual bool CmdReply(redisContext *pContext)
+    {
+        if (!pContext)
+            return this->SetErrInfo(RC_RQST_ERR, "Invalid connection");
+
+        if (this->m_pReply)
+        {
+            freeReplyObject(this->m_pReply);
+            this->m_pReply = nullptr;
+        }
+
+        int nRet = redisGetReply(pContext, (void **)&(this->m_pReply));
+        return nRet == REDIS_OK ? this->ParseReply() : this->SetErrInfo(RC_RQST_ERR, pContext->errstr);
+    }
+
+    void DumpArgs(std::ostream &os) const
+    {
+        os << "total " << m_nArgs << " args" << std::endl;
+        for (int i = 0; i < m_nArgs; ++i)
+            os << i + 1 << " : " << m_pszArgs[i] << std::endl;
+    }
 
 protected:
     void ClearArgs()
@@ -138,30 +342,45 @@ protected:
         m_nArgs = 0;
     }
 
-protecte:
+protected:
     int m_nArgs;
     char **m_pszArgs;
     size_t *m_pnArgsLen;
+    int m_nSlot;
 };
 
-class CRedisServer;
+class CRedisCommandAry : public CRedisError
+{
+public:
+    void Append(CRedisCommand *pRedisCmd) { m_vecRedisCmd.push_back(pRedisCmd); }
+
+    int Size() { return m_vecRedisCmd.size(); }
+    CRedisCommand * operator[](int nIndex) { return m_vecRedisCmd[nIndex]; }
+    template <typename T> CRedisCommandImpl<T> * GetAt(int nIndex, T)
+    { return dynamic_cast<CRedisCommandImpl<T> >(m_vecRedisCmd[nIndex]); }
+
+protected:
+    std::vector<CRedisCommand *> m_vecRedisCmd;
+};
+typedef CRedisCommandAry CRedisPipeline;
+
 class CRedisConnection
 {
 public:
     CRedisConnection(CRedisServer *pRedisServ);
 
     bool IsValid() { return m_pContext != nullptr; }
-    int ConnRequest(CRedisCommand *pRedisCmd);
-    int ConnRequest(std::vector<CRedisCommand *> &vecRedisCmd);
+    bool ConnRequest(CRedisCommand *pRedisCmd);
+    bool ConnRequest(CRedisCommandAry &redisCmdAry);
 
 private:
     bool ConnectToRedis(const std::string &strHost, int nPort, int nTimeout);
     bool Reconnect();
 
 private:
+    CRedisServer *m_pRedisServ;
     redisContext *m_pContext;
     time_t m_nUseTime;
-    CRedisServer *m_pRedisServ;
 };
 
 class CRedisServer
@@ -178,16 +397,13 @@ public:
     int GetPort() const { return m_nPort; }
     bool IsValid() const { return m_queIdleConn.size(); }
 
-    // for the blocking request
     int ServRequest(CRedisCommand *pRedisCmd);
-
-    // for the pipeline requirement
-    int ServRequest(std::vector<CRedisCommand *> &vecRedisCmd);
+    int ServRequest(CRedisCommandAry &redisCmdAry);
 
 private:
     bool Initialize();
-    CRedisConnection *FetchConnection();
-    void ReturnConnection(CRedisConnection *pRedisConn);
+    CRedisConnection *FetchConn();
+    void ReturnConn(CRedisConnection *pRedisConn);
     void CleanConn();
 
 private:
@@ -202,271 +418,6 @@ private:
     std::mutex m_mutexConn;
 };
 
-class CRedisClient;
-class CRedisPipeline
-{
-    friend class CRedisClient;
-public:
-    ~CRedisPipeline();
-
-private:
-    CRedisPipeline() : m_nCursor(0) {}
-
-    void QueueCommand(CRedisCommand *pRedisCmd);
-    int FlushCommand(CRedisClient *pRedisCli);
-    int FetchNext(TFuncFetch funcFetch);
-    int FetchNext(redisReply **pReply);
-
-private:
-    std::map<CRedisServer *, std::vector<CRedisCommand *> > m_mapCmd;
-    std::vector<CRedisCommand *> m_vecCmd;
-    size_t m_nCursor;
-};
-
-typedef void * Pipeline;
-class CRedisClient
-{
-    friend class CRedisPipeline;
-public:
-    CRedisClient();
-    ~CRedisClient();
-
-    bool Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNum);
-    bool IsCluster() { return m_bCluster; }
-
-    Pipeline CreatePipeline();
-    int FlushPipeline(Pipeline ppLine);
-    int FetchReply(Pipeline ppLine, long *pnVal);
-    int FetchReply(Pipeline ppLine, std::string *pstrVal);
-    int FetchReply(Pipeline ppLine, std::vector<long> *pvecLongVal);
-    int FetchReply(Pipeline ppLine, std::vector<std::string> *pvecStrVal);
-    int FetchReply(Pipeline ppLine, redisReply **pReply);
-    void FreePipeline(Pipeline ppLine);
-
-    /* interfaces for generic */
-    int Del(const std::string &strKey, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Dump(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Exists(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Expire(const std::string &strKey, long nSec, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Expireat(const std::string &strKey, long nTime, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Keys(const std::string &strPattern, std::vector<std::string> *pvecVal);
-    int Persist(const std::string &strKey, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Pexpire(const std::string &strKey, long nMilliSec, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Pexpireat(const std::string &strKey, long nMilliTime, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Pttl(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Randomkey(std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Rename(const std::string &strKey, const std::string &strNewKey);
-    int Renamenx(const std::string &strKey, const std::string &strNewKey);
-    int Restore(const std::string &strKey, long nTtl, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Scan(long *pnCursor, const std::string &strPattern, long nCount, std::vector<std::string> *pvecVal);
-    int Ttl(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Type(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-
-    /* interfaces for string */
-    int Append(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Decr(const std::string &strKey, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Decrby(const std::string &strKey, long nDecr, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Get(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Getbit(const std::string &strKey, long nOffset, long *pnVal, Pipeline ppLine = nullptr);
-    int Getrange(const std::string &strKey, long nStart, long nStop, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Getset(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Incr(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Incrby(const std::string &strKey, long nIncr, long *pnVal, Pipeline ppLine = nullptr);
-    int Incrbyfloat(const std::string &strKey, double dIncr, double *pdVal, Pipeline ppLine = nullptr);
-    int Mget(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal);
-    int Mset(const std::vector<std::string> &vecKey, const std::vector<std::string> &vecVal);
-    int Psetex(const std::string &strKey, long nMilliSec, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Set(const std::string &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Setbit(const std::string &strKey, long nOffset, bool bVal, Pipeline ppLine = nullptr);
-    int Setex(const std::string &strKey, long nSec, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Setnx(const std::string &strKey, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Setrange(const std::string &strKey, long nOffset, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Strlen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-
-    /* interfaces for list */
-    int Blpop(const std::string &strKey, long nTimeout, std::vector<std::string> *pvecVal);
-    int Blpop(const std::vector<std::string> &vecKey, long nTimeout, std::vector<std::string> *pvecVal);
-    int Brpop(const std::string &strKey, long nTimeout, std::vector<std::string> *pvecVal);
-    int Brpop(const std::vector<std::string> &vecKey, long nTimeout, std::vector<std::string> *pvecVal);
-    int Lindex(const std::string &strKey, long nIndex, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Linsert(const std::string &strKey, const std::string &strPos, const std::string &strPivot, const std::string &strVal, long *pnVal, Pipeline ppLine = nullptr);
-    int Llen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Lpop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Lpush(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Lpush(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
-    int Lpushx(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Lrange(const std::string &strKey, long nStart, long nStop, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Lrem(const std::string &strKey, long nCount, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Lset(const std::string &strKey, long nIndex, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Ltrim(const std::string &strKey, long nStart, long nStop, Pipeline ppLine = nullptr);
-    int Rpop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Rpush(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Rpush(const std::string &strKey, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
-    int Rpushx(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-
-    /* interfaces for set */
-    int Sadd(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline = nullptr);
-    int Scard(const std::string &strKey, long *pnVal, Pipeline = nullptr);
-    //int Sdiff(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    //int Sinter(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Sismember(const std::string &strKey, const std::string &strVal, long *pnVal, Pipeline ppLine = nullptr);
-    int Smembers(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Spop(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Srandmember(const std::string &strKey, long nCount, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Srem(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Srem(const std::string &strKey, const std::vector<std::string> &vecVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    //int Sunion(const std::vector<std::string> &vecKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-
-    /* interfaces for hash */
-    int Hdel(const std::string &strKey, const std::string &strField, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Hexists(const std::string &strKey, const std::string &strField, long *pnVal, Pipeline ppLine = nullptr);
-    int Hget(const std::string &strKey, const std::string &strField, std::string *pstrVal, Pipeline ppLine = nullptr);
-    int Hgetall(const std::string &strKey, std::map<std::string, std::string> *pmapFv, Pipeline ppLine = nullptr);
-    int Hincrby(const std::string &strKey, const std::string &strField, long nIncr, long *pnVal, Pipeline ppLine = nullptr);
-    int Hincrbyfloat(const std::string &strKey, const std::string &strField, double dIncr, double *pdVal, Pipeline ppLine = nullptr);
-    int Hkeys(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Hlen(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
-    int Hmget(const std::string &strKey, const std::vector<std::string> &vecField, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Hmget(const std::string &strKey, const std::vector<std::string> &vecField, std::map<std::string, std::string> *pmapVal);
-    int Hmget(const std::string &strKey, const std::set<std::string> &setField, std::map<std::string, std::string> *pmapVal);
-    int Hmset(const std::string &strKey, const std::vector<std::string> &vecField, const std::vector<std::string> &vecVal, Pipeline ppLine = nullptr);
-    int Hmset(const std::string &strKey, const std::map<std::string, std::string> &mapFv, Pipeline ppLine = nullptr);
-    //int Hscan(const std::string &strKey, long *pnCursor, const std::string &strMatch, long nCount, std::vector<std::string> *pvecVal);
-    int Hset(const std::string &strKey, const std::string &strField, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Hsetnx(const std::string &strKey, const std::string &strField, const std::string &strVal, Pipeline ppLine = nullptr);
-    int Hvals(const std::string &strKey, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-
-    /* interfaces for sorted set */
-    int Zadd(const std::string &strKey, double dScore, const std::string &strElem, long *pnVal = nullptr, Pipeline = nullptr);
-    int Zcard(const std::string &strKey, long *pnVal, Pipeline = nullptr);
-    int Zcount(const std::string &strKey, double dMin, double dMax, long *pnVal, Pipeline ppLine = nullptr);
-    int Zincrby(const std::string &strKey, double dIncr, const std::string &strElem, double *pdVal, Pipeline ppLine = nullptr);
-    int Zlexcount(const std::string &strKey, const std::string &strMin, const std::string &strMax, long *pnVal, Pipeline ppLine = nullptr);
-    int Zrange(const std::string &strKey, long nStart, long nStop, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Zrangebylex(const std::string &strKey, const std::string &strMin, const std::string &strMax, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Zrangebyscore(const std::string &strKey, double dMin, double dMax, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Zrangebyscore(const std::string &strKey, double dMin, double dMax, std::map<std::string, double> *pmapVal, Pipeline ppLine = nullptr);
-    int Zrank(const std::string &strKey, const std::string &strElem, long *pnVal, Pipeline ppLine = nullptr);
-    int Zrem(const std::string &strKey, const std::string &strElem, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Zrem(const std::string &strKey, const std::vector<std::string> &vecElem, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Zremrangebylex(const std::string &strKey, const std::string &strMin, const std::string &strMax, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Zremrangebyrank(const std::string &strKey, long nStart, long nStop, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Zremrangebyscore(const std::string &strKey, double dMin, double dMax, long *pnVal = nullptr, Pipeline ppLine = nullptr);
-    int Zrevrange(const std::string &strKey, long nStart, long nStop, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Zrevrangebyscore(const std::string &strKey, double dMax, double dMin, std::vector<std::string> *pvecVal, Pipeline ppLine = nullptr);
-    int Zrevrangebyscore(const std::string &strKey, double dMax, double dMin, std::map<std::string, double> *pmapVal, Pipeline ppLine = nullptr);
-    int Zrevrank(const std::string &strKey, const std::string &strElem, long *pnVal, Pipeline ppLine = nullptr);
-    int Zscore(const std::string &strKey, const std::string &strElem, double *pdVal, Pipeline ppLine = nullptr);
-
-    /* interfaces for system */
-    int Time(struct timeval *ptmVal, Pipeline ppLine = nullptr);
-
-private:
-    static bool ConvertToMapInfo(const std::string &strVal, std::map<std::string, std::string> &mapVal);
-    static bool GetValue(redisReply *pReply, std::string &strVal);
-    static bool GetArray(redisReply *pReply, std::vector<std::string> &vecVal);
-    static CRedisServer * FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort);
-
-    void operator()();
-
-    void CleanServer();
-    CRedisServer * FindServer(int nSlot) const;
-    bool InSameNode(const std::string &strKey1, const std::string &strKey2);
-    CRedisServer * GetMatchedServer(const CRedisCommand *pRedisCmd) const;
-
-    bool LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo);
-    bool LoadClusterSlots();
-    bool WaitForRefresh();
-    int Execute(CRedisCommand *pRedisCmd, Pipeline ppLine = nullptr);
-    int SimpleExecute(CRedisCommand *pRedisCmd);
-
-    int ExecuteImpl(const std::string &strCmd, int nSlot, Pipeline ppLine,
-                   TFuncFetch funcFetch, TFuncConvert funcConv = FUNC_DEF_CONV);
-
-    template <typename P>
-    int ExecuteImpl(const std::string &strCmd, const P &tArg, int nSlot, Pipeline ppLine,
-                   TFuncFetch funcFetch, TFuncConvert funcConv = FUNC_DEF_CONV)
-    {
-        CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, !ppLine);
-        pRedisCmd->SetArgs(tArg);
-        pRedisCmd->SetSlot(nSlot);
-        pRedisCmd->SetConvFunc(funcConv);
-        int nRet = Execute(pRedisCmd, ppLine);
-        if (nRet == RC_SUCCESS && !ppLine)
-            nRet = pRedisCmd->FetchResult(funcFetch);
-        if (!ppLine)
-            delete pRedisCmd;
-        return nRet;
-    }
-
-    template <typename P1, typename P2>
-    int ExecuteImpl(const std::string &strCmd, const P1 &tArg1, const P2 &tArg2, int nSlot, Pipeline ppLine,
-                   TFuncFetch funcFetch, TFuncConvert funcConv = FUNC_DEF_CONV)
-    {
-        CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, !ppLine);
-        pRedisCmd->SetArgs(tArg1, tArg2);
-        pRedisCmd->SetSlot(nSlot);
-        pRedisCmd->SetConvFunc(funcConv);
-        int nRet = Execute(pRedisCmd, ppLine);
-        if (nRet == RC_SUCCESS && !ppLine)
-            nRet = pRedisCmd->FetchResult(funcFetch);
-        if (!ppLine)
-            delete pRedisCmd;
-        return nRet;
-    }
-
-    template <typename P1, typename P2, typename P3>
-    int ExecuteImpl(const std::string &strCmd, const P1 &tArg1, const P2 &tArg2, const P3 &tArg3, int nSlot, Pipeline ppLine,
-                   TFuncFetch funcFetch, TFuncConvert funcConv = FUNC_DEF_CONV)
-    {
-        CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, !ppLine);
-        pRedisCmd->SetArgs(tArg1, tArg2, tArg3);
-        pRedisCmd->SetSlot(nSlot);
-        pRedisCmd->SetConvFunc(funcConv);
-        int nRet = Execute(pRedisCmd, ppLine);
-        if (nRet == RC_SUCCESS && !ppLine)
-            nRet = pRedisCmd->FetchResult(funcFetch);
-        if (!ppLine)
-            delete pRedisCmd;
-        return nRet;
-    }
-
-    template <typename P1, typename P2, typename P3, typename P4>
-    int ExecuteImpl(const std::string &strCmd, const P1 &tArg1, const P2 &tArg2, const P3 &tArg3, const P4 &tArg4, int nSlot, Pipeline ppLine,
-                   TFuncFetch funcFetch, TFuncConvert funcConv = FUNC_DEF_CONV)
-    {
-        CRedisCommand *pRedisCmd = new CRedisCommand(strCmd, !ppLine);
-        pRedisCmd->SetArgs(tArg1, tArg2, tArg3, tArg4);
-        pRedisCmd->SetSlot(nSlot);
-        pRedisCmd->SetConvFunc(funcConv);
-        int nRet = Execute(pRedisCmd, ppLine);
-        if (nRet == RC_SUCCESS && !ppLine)
-            nRet = pRedisCmd->FetchResult(funcFetch);
-        if (!ppLine)
-            delete pRedisCmd;
-        return nRet;
-    }
-
-private:
-    std::string m_strHost;
-    int m_nPort;
-    int m_nTimeout;
-    int m_nConnNum;
-    bool m_bCluster;
-    bool m_bValid;
-    bool m_bExit;
-
-    std::vector<SlotRegion> m_vecSlot;
-    std::vector<CRedisServer *> m_vecRedisServ;
-
-#if defined(linux) || defined(__linux) || defined(__linux__)
-    pthread_rwlockattr_t m_rwAttr;
-#endif
-    pthread_rwlock_t m_rwLock;
-    std::condition_variable_any m_condAny;
-    std::thread *m_pThread;
-};
-
 class CRedisClient
 {
 public:
@@ -477,7 +428,7 @@ public:
     bool IsCluster() { return m_bCluster; }
 
     bool Request(CRedisCommand *pRedisCmd);
-    bool Request(CRedisPipeline *pRedisPipe);
+    bool Request(CRedisPipeline &pRedisPipe);
 
 private:
     void operator()();
@@ -495,7 +446,7 @@ private:
 
 private:
     static bool ConvertInfoToMap(const std::string &strVal, std::map<std::string, std::string> &mapVal);
-    static CRedisServer * FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort) const;
+    static CRedisServer * FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort);
 
 private:
     std::string m_strHost;

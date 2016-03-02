@@ -1,12 +1,12 @@
 #include "RedisClient.hpp"
 
-#define BIND_INT(val) std::bind(&FetchInteger, std::placeholders::_1, val)
-#define BIND_STR(val) std::bind(&FetchString, std::placeholders::_1, val)
-#define BIND_VINT(val) std::bind(&FetchIntegerArray, std::placeholders::_1, val)
-#define BIND_VSTR(val) std::bind(&FetchStringArray, std::placeholders::_1, val)
-#define BIND_MAP(val) std::bind(&FetchMap, std::placeholders::_1, val)
-#define BIND_TIME(val) std::bind(&FetchTime, std::placeholders::_1, val)
-#define BIND_SLOT(val) std::bind(&FetchSlot, std::placeholders::_1, val)
+#define BIND_INT(val) std::bind(&FetchInteger, std::placeholders::_1, std::placeholders::_2)
+#define BIND_STR(val) std::bind(&FetchString, std::placeholders::_1, std::placeholders::_2)
+#define BIND_VINT(val) std::bind(&FetchIntegerArray, std::placeholders::_1, std::placeholders::_2)
+#define BIND_VSTR(val) std::bind(&FetchStringArray, std::placeholders::_1, std::placeholders::_2)
+#define BIND_MAP(val) std::bind(&FetchMap, std::placeholders::_1, std::placeholders::_2)
+#define BIND_TIME(val) std::bind(&FetchTime, std::placeholders::_1, std::placeholders::_2)
+#define BIND_SLOT(val) std::bind(&FetchSlot, std::placeholders::_1, std::placeholders::_2)
 
 // crc16 for computing redis cluster slot
 static const uint16_t crc16Table[256] =
@@ -119,14 +119,6 @@ static inline std::ostream & operator<<(std::ostream &os, redisReply *pReply)
     return os << std::make_pair(0, pReply);
 }
 
-template <typename T>
-std::string ConvertToString(T t)
-{
-    std::stringstream sstream;
-    sstream << t;
-    return sstream.str();
-}
-
 // for finding matched slot/server with binary search
 bool operator< (const SlotRegion &lReg, const SlotRegion &rReg)
 {
@@ -140,332 +132,50 @@ public:
     bool operator()(int nSlot, const SlotRegion &slotReg) { return nSlot < slotReg.nStartSlot; }
 };
 
-class IntResConv
-{
-public:
-    IntResConv(int nConvRet = RC_OBJ_NOT_EXIST, long nVal = 0) : m_nConvRet(nConvRet), m_nVal(nVal) {}
-    int operator()(int nRet, redisReply *pReply)
-    {
-        if (nRet == RC_SUCCESS && pReply->integer == m_nVal)
-            return m_nConvRet;
-        return nRet;
-    }
-
-private:
-    int m_nConvRet;
-    long m_nVal;
-};
-
-class StuResConv
-{
-public:
-    StuResConv() : m_strVal("OK") {}
-    StuResConv(const std::string &strVal) : m_strVal(strVal) {}
-    int operator()(int nRet, redisReply *pReply)
-    {
-        if (nRet == RC_SUCCESS && m_strVal != pReply->str)
-            return RC_REPLY_ERR;
-        return nRet;
-    }
-
-private:
-    std::string m_strVal;
-};
-
-class NilResConv
-{
-public:
-    NilResConv();
-    int operator()(int nRet, redisReply *pReply)
-    {
-        if (nRet == RC_SUCCESS && pReply->type == REDIS_REPLY_NIL)
-            return RC_OBJ_NOT_EXIST;
-        return nRet;
-    }
-};
-
-class ExistErrConv
-{
-public:
-    ExistErrConv() : m_strErr("Target key name is busy") {}
-    int operator()(int nRet, redisReply *pReply)
-    {
-        if (nRet == RC_REPLY_ERR && m_strErr == pReply->str)
-            return RC_OBJ_EXIST;
-        return nRet;
-    }
-
-private:
-    std::string m_strErr;
-};
-
-static inline int FetchInteger(redisReply *pReply, long *pnVal)
-{
-    if (pReply->type == REDIS_REPLY_INTEGER)
-    {
-        if (pnVal)
-            *pnVal = pReply->integer;
-        return RC_SUCCESS;
-    }
-    else if (pReply->type == REDIS_REPLY_NIL)
-        return RC_OBJ_NOT_EXIST;
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchString(redisReply *pReply, std::string *pstrVal)
-{
-    if (pReply->type == REDIS_REPLY_STRING || pReply->type == REDIS_REPLY_STATUS)
-    {
-        if (pstrVal)
-            pstrVal->assign(pReply->str, pReply->len);
-        return RC_SUCCESS;
-    }
-    else if (pReply->type == REDIS_REPLY_NIL)
-    {
-        if (pstrVal)
-            pstrVal->clear();
-        return RC_SUCCESS;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchIntegerArray(redisReply *pReply, std::vector<long> *pvecLongVal)
-{
-    if (pReply->type == REDIS_REPLY_INTEGER)
-    {
-        int nRet = RC_SUCCESS;
-        if (!pvecLongVal)
-            return nRet;
-
-        long nVal;
-        pvecLongVal->clear();
-        for (size_t i = 0; i < pReply->elements; ++i)
-        {
-            int nSubRet = FetchInteger(pReply->element[i], &nVal);
-            if (nSubRet == RC_SUCCESS)
-                pvecLongVal->push_back(nVal);
-            else
-                nRet = RC_PART_SUCCESS;
-        }
-        return nRet;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchStringArray(redisReply *pReply, std::vector<std::string> *pvecStrVal)
-{
-    if (pReply->type == REDIS_REPLY_ARRAY)
-    {
-        int nRet = RC_SUCCESS;
-        if (!pvecStrVal)
-            return nRet;
-
-        std::string strVal;
-        pvecStrVal->clear();
-        for (size_t i = 0; i < pReply->elements; ++i)
-        {
-            int nSubRet = FetchString(pReply->element[i], &strVal);
-            if (nSubRet == RC_SUCCESS)
-                pvecStrVal->push_back(strVal);
-            else
-                nRet = RC_PART_SUCCESS;
-        }
-        return nRet;
-    }
-    else if (pReply->type == REDIS_REPLY_NIL)
-    {
-        if (pvecStrVal)
-            pvecStrVal->clear();
-        return RC_SUCCESS;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchMap(redisReply *pReply, std::map<std::string, std::string> *pmapFv)
-{
-    if (pReply->type == REDIS_REPLY_ARRAY)
-    {
-        int nRet = RC_SUCCESS;
-        if (!pmapFv)
-            return nRet;
-
-        if ((pReply->elements % 2) != 0)
-            return RC_REPLY_ERR;
-
-        std::string strFld;
-        std::string strVal;
-        pmapFv->clear();
-        for (size_t i = 0; i < pReply->elements; )
-        {
-            int nSubRet = FetchString(pReply->element[i++], &strFld);
-            if (nSubRet == RC_SUCCESS)
-                nSubRet = FetchString(pReply->element[i++], &strVal);
-
-            if (nSubRet == RC_SUCCESS)
-                pmapFv->insert(std::make_pair(strFld, strVal));
-            else
-                return nSubRet;
-        }
-        return nRet;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchTime(redisReply *pReply, struct timeval *ptmVal)
-{
-    if (pReply->type == REDIS_REPLY_ARRAY)
-    {
-        if (pReply->elements != 2 || pReply->element[0]->type != REDIS_REPLY_STRING ||
-            pReply->element[1]->type != REDIS_REPLY_STRING)
-            return RC_REPLY_ERR;
-
-        if (ptmVal)
-        {
-            ptmVal->tv_sec = atol(pReply->element[0]->str);
-            ptmVal->tv_usec = atol(pReply->element[1]->str);
-        }
-        return RC_SUCCESS;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-static inline int FetchSlot(redisReply *pReply, std::vector<SlotRegion> *pvecSlot)
-{
-    if (pReply->type == REDIS_REPLY_ARRAY)
-    {
-        if (!pvecSlot)
-            return RC_SUCCESS;
-
-        SlotRegion slotReg;
-        pvecSlot->clear();
-        for (size_t i = 0; i < pReply->elements; ++i)
-        {
-            redisReply *pSubReply = pReply->element[i];
-            if (pSubReply->type != REDIS_REPLY_ARRAY || pSubReply->elements < 3)
-                return RC_REPLY_ERR;
-
-            slotReg.nStartSlot = pSubReply->element[0]->integer;
-            slotReg.nEndSlot = pSubReply->element[1]->integer;
-            slotReg.pRedisServ = nullptr;
-            slotReg.strHost = pSubReply->element[2]->element[0]->str;
-            slotReg.nPort = pSubReply->element[2]->element[1]->integer;
-            pvecSlot->push_back(slotReg);
-        }
-        return RC_SUCCESS;
-    }
-    else
-        return RC_REPLY_ERR;
-}
-
-// CRedisCommand methods
-bool CRedisCommand::CmdRequest(redisContext *pContext)
-{
-    if (m_nArgs <= 0)
-        return SetErrInfo(RC_PARAM_ERR);
-
-    if (!pContext)
-        return SetErrInfo(RC_RQST_ERR, "No valid connection");
-
-    m_pReply = static_cast<redisReply *>(redisCommandArgv(pContext, m_nArgs,
-                                         (const char **)m_pszArgs, (const size_t *)m_pnArgsLen));
-    return ParseReply();
-}
-
-bool CRedisCommand::CmdAppend(redisContext *pContext)
-{
-    if (m_nArgs <= 0)
-        return SetErrInfo(RC_PARAM_ERR);
-
-    if (!pContext)
-        return SetErrInfo(RC_RQST_ERR, "No valid connection");
-
-    int nRet = redisAppendCommandArgv(pContext, m_nArgs, (const char **)m_pszArgs, (const size_t *)m_pnArgsLen);
-    return nRet == REDIS_OK ? SetErrInfo(RC_SUCCESS) : SetErrInfo(RC_RQST_ERR, pContext->errstr);
-}
-
-bool CRedisCommand::CmdReply(redisContext *pContext)
-{
-    if (!pContext)
-        return SetErrInfo(RC_RQST_ERR, "No valid connection");
-
-    if (m_pReply)
-    {
-        freeReplyObject(m_pReply);
-        m_pReply = nullptr;
-    }
-
-    int nRet = redisGetReply(pContext, (void **)&m_pReply);
-    return nRet == REDIS_OK ? ParseReply() ? SetErrInfo(RC_RQST_ERR, pContext->errstr);
-}
-
-void CRedisCommand::DumpArgs() const
-{
-    std::cout << "total " << m_nArgs << " args" << std::endl;
-    for (int i = 0; i < m_nArgs; ++i)
-        std::cout << i + 1 << " : " << m_pszArgs[i] << std::endl;
-}
-
-void CRedisCommand::DumpReply() const
-{
-    if (!m_pReply)
-        std::cout << "no reply" << std::endl;
-    else
-        std::cout << m_pReply;
-}
-
-
 // CRedisConnection methods
-CRedisConnection::CRedisConnection(CRedisServer *pRedisServ) : m_pContext(nullptr), m_nUseTime(0), m_pRedisServ(pRedisServ)
+CRedisConnection::CRedisConnection(CRedisServer *pRedisServ)
+    : m_pRedisServ(pRedisServ), m_pContext(nullptr), m_nUseTime(0)
 {
     Reconnect();
 }
 
-int CRedisConnection::ConnRequest(CRedisCommand *pRedisCmd)
+bool CRedisConnection::ConnRequest(CRedisCommand *pRedisCmd)
 {
     time_t tmNow = time(nullptr);
-    if (!m_pContext || tmNow - m_nUseTime >= m_pRedisServ->m_nSerTimeout)
+    if ((!m_pContext || tmNow - m_nUseTime >= m_pRedisServ->m_nSerTimeout) && !Reconnect())
+        return pRedisCmd->SetErrInfo(RC_RQST_ERR, "Can not connect to redis");
+
+    bool bRet = pRedisCmd->CmdRequest(m_pContext);
+    if (!bRet && pRedisCmd->GetErrCode() == RC_RQST_ERR)
     {
-        if (!Reconnect())
-            return RC_RQST_ERR;
+        if (tmNow - m_nUseTime < m_pRedisServ->m_nSerTimeout || !Reconnect())
+            return bRet;
+        bRet = pRedisCmd->CmdRequest(m_pContext);
     }
 
-    int nRet = pRedisCmd->CmdRequest(m_pContext);
-    if (nRet == RC_RQST_ERR)
-    {
-        if (tmNow - m_nUseTime < m_pRedisServ->m_nSerTimeout)
-            return nRet;
-        else if (!Reconnect())
-            return RC_RQST_ERR;
-        else
-            nRet = pRedisCmd->CmdRequest(m_pContext);
-    }
-
-    if (nRet != RC_RQST_ERR)
+    if (pRedisCmd->GetErrCode() != RC_RQST_ERR)
         m_nUseTime = tmNow;
-    return nRet;
+    return bRet;
 }
 
-int CRedisConnection::ConnRequest(std::vector<CRedisCommand *> &vecRedisCmd)
+bool CRedisConnection::ConnRequest(CRedisCommandAry &redisCmdAry)
 {
     time_t tmNow = time(nullptr);
-    if (!m_pContext || tmNow - m_nUseTime >= m_pRedisServ->m_nSerTimeout)
-    {
-        if (!Reconnect())
-            return RC_RQST_ERR;
-    }
+    if ((!m_pContext || tmNow - m_nUseTime >= m_pRedisServ->m_nSerTimeout) && !Reconnect())
+        return redisCmdAry.SetErrInfo(RC_RQST_ERR, "Can not connect to redis");
 
-    int nRet = RC_SUCCESS;
-    for (size_t i = 0; i < vecRedisCmd.size() && nRet == RC_SUCCESS; ++i)
-        nRet = vecRedisCmd[i]->CmdAppend(m_pContext);
-    for (size_t i = 0; i < vecRedisCmd.size() && nRet == RC_SUCCESS; ++i)
-        nRet = vecRedisCmd[i]->CmdReply(m_pContext);
-    return nRet;
+    bool bRet = true;
+    for (int i = 0; i < redisCmdAry.Size() && bRet; ++i)
+    {
+        if (!(bRet = redisCmdAry[i]->CmdAppend(m_pContext)))
+            redisCmdAry.SetErrInfo(redisCmdAry[i]->GetErrCode(), redisCmdAry[i]->GetErrMsg());
+    }
+    for (int i = 0; i < redisCmdAry.Size() && bRet; ++i)
+    {
+        if (!(bRet = redisCmdAry[i]->CmdReply(m_pContext)))
+            redisCmdAry.SetErrInfo(redisCmdAry[i]->GetErrCode(), redisCmdAry[i]->GetErrMsg());
+    }
+    return bRet;
 }
 
 bool CRedisConnection::ConnectToRedis(const std::string &strHost, int nPort, int nTimeout)
@@ -523,41 +233,32 @@ CRedisServer::~CRedisServer()
     CleanConn();
 }
 
-void CRedisServer::CleanConn()
-{
-    m_mutexConn.lock();
-    while (!m_queIdleConn.empty())
-    {
-        delete m_queIdleConn.front();
-        m_queIdleConn.pop();
-    }
-    m_mutexConn.unlock();
-}
-
 void CRedisServer::SetSlave(const std::string &strHost, int nPort)
 {
     m_vecHosts.push_back(std::make_pair(strHost, nPort));
 }
 
-CRedisConnection * CRedisServer::FetchConnection()
-{
-    CRedisConnection *pRedisConn = nullptr;
-    m_mutexConn.lock();
-    if (!m_queIdleConn.empty())
-    {
-        pRedisConn = m_queIdleConn.front();
-        m_queIdleConn.pop();
-    }
-    m_mutexConn.unlock();
-    return pRedisConn;
+#define MacroDefine(type, oper) \
+int CRedisServer::ServRequest(type redisCmd) \
+{ \
+    CRedisConnection *pRedisConn = nullptr; \
+    int nTry = RQST_RETRY_TIMES; \
+    while (nTry--) \
+    { \
+        if ((pRedisConn = FetchConn())) \
+            break; \
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); \
+    } \
+    if (!pRedisConn) \
+        return redisCmd oper SetErrInfo(RC_RQST_ERR, "No valid connection"); \
+    int nRet = pRedisConn->ConnRequest(redisCmd); \
+    ReturnConn(pRedisConn); \
+    return nRet; \
 }
 
-void CRedisServer::ReturnConnection(CRedisConnection *pRedisConn)
-{
-    m_mutexConn.lock();
-    m_queIdleConn.push(pRedisConn);
-    m_mutexConn.unlock();
-}
+MacroDefine(CRedisCommand *, ->)
+MacroDefine(CRedisCommandAry &, .)
+#undef MacroDefine
 
 bool CRedisServer::Initialize()
 {
@@ -572,107 +273,43 @@ bool CRedisServer::Initialize()
 
     if (!m_queIdleConn.empty())
     {
-        std::vector<std::string> vecTimeout;
-        CRedisCommand redisCmd("config");
-        redisCmd.SetArgs("get", "timeout");
-        if (ServRequest(&redisCmd) == RC_SUCCESS &&
-            redisCmd.FetchResult(BIND_VSTR(&vecTimeout)) == RC_SUCCESS &&
-            vecTimeout.size() == 2)
-            m_nSerTimeout = atoi(vecTimeout[1].c_str());
+        std::vector<std::string> vecParams = {"config", "get", "timeout"};
+        CRedisCommandImpl<VECSTR> redisCmd(vecParams, BIND_VSTR());
+        if (ServRequest(&redisCmd) && redisCmd.GetResult().size() == 2)
+            m_nSerTimeout = atoi((redisCmd.GetResult())[1].c_str());
     }
     return !m_queIdleConn.empty();
 }
 
-int CRedisServer::ServRequest(CRedisCommand *pRedisCmd)
+CRedisConnection * CRedisServer::FetchConn()
 {
     CRedisConnection *pRedisConn = nullptr;
-    int nTry = RQST_RETRY_TIMES;
-    while (nTry--)
+    m_mutexConn.lock();
+    if (!m_queIdleConn.empty())
     {
-        if ((pRedisConn = FetchConnection()))
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        pRedisConn = m_queIdleConn.front();
+        m_queIdleConn.pop();
     }
-
-    if (!pRedisConn)
-        return RC_NO_RESOURCE;
-
-    int nRet = pRedisConn->ConnRequest(pRedisCmd);
-    ReturnConnection(pRedisConn);
-    return nRet;
+    m_mutexConn.unlock();
+    return pRedisConn;
 }
 
-int CRedisServer::ServRequest(std::vector<CRedisCommand *> &vecRedisCmd)
+void CRedisServer::ReturnConn(CRedisConnection *pRedisConn)
 {
-    CRedisConnection *pRedisConn = nullptr;
-    int nTry = RQST_RETRY_TIMES;
-    while (nTry--)
+    m_mutexConn.lock();
+    m_queIdleConn.push(pRedisConn);
+    m_mutexConn.unlock();
+}
+
+void CRedisServer::CleanConn()
+{
+    m_mutexConn.lock();
+    while (!m_queIdleConn.empty())
     {
-        if ((pRedisConn = FetchConnection()))
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        delete m_queIdleConn.front();
+        m_queIdleConn.pop();
     }
-
-    if (!pRedisConn)
-        return RC_NO_RESOURCE;
-
-    int nRet = pRedisConn->ConnRequest(vecRedisCmd);
-    ReturnConnection(pRedisConn);
-    return nRet;
-}
-
-// CRedisPipeline methods
-CRedisPipeline::~CRedisPipeline()
-{
-    for (auto pRedisCmd : m_vecCmd)
-        delete pRedisCmd;
-}
-
-void CRedisPipeline::QueueCommand(CRedisCommand *pRedisCmd)
-{
-    m_vecCmd.push_back(pRedisCmd);
-}
-
-int CRedisPipeline::FlushCommand(CRedisClient *pRedisCli)
-{
-    m_mapCmd.clear();
-    for (auto &pRedisCmd : m_vecCmd)
-    {
-        CRedisServer *pRedisServ = pRedisCli->GetMatchedServer(pRedisCmd);
-        auto it = m_mapCmd.find(pRedisServ);
-        if (it != m_mapCmd.end())
-            it->second.push_back(pRedisCmd);
-        else
-        {
-            std::vector<CRedisCommand *> vecCmd;
-            vecCmd.push_back(pRedisCmd);
-            m_mapCmd.insert(std::make_pair(pRedisServ, vecCmd));
-        }
-    }
-
-    int nRet = RC_SUCCESS;
-    for (auto it = m_mapCmd.begin(); it != m_mapCmd.end() && nRet == RC_SUCCESS; ++it)
-        nRet = it->first->ServRequest(it->second);
-    return nRet;
-}
-
-int CRedisPipeline::FetchNext(TFuncFetch funcFetch)
-{
-    if (m_nCursor >= m_vecCmd.size())
-        return RC_RESULT_EOF;
-    else
-        return m_vecCmd[m_nCursor++]->FetchResult(funcFetch);
-}
-
-int CRedisPipeline::FetchNext(redisReply **pReply)
-{
-    if (m_nCursor >= m_vecCmd.size())
-        return RC_RESULT_EOF;
-    else
-    {
-        *pReply = (redisReply *)m_vecCmd[m_nCursor++]->GetReply();
-        return RC_SUCCESS;
-    }
+    m_mutexConn.unlock();
 }
 
 // CRedisClient methods
@@ -725,13 +362,11 @@ bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeou
     if (!pRedisServ->IsValid())
         return false;
 
-    std::string strInfo;
     std::map<std::string, std::string> mapInfo;
-    CRedisCommand redisCmd("info");
-    redisCmd.SetArgs();
-    if (pRedisServ->ServRequest(&redisCmd) != RC_SUCCESS ||
-        redisCmd.FetchResult(BIND_STR(&strInfo)) != RC_SUCCESS ||
-        !ConvertToMapInfo(strInfo, mapInfo))
+    std::vector<std::string> vecParams = {"info"};
+    CRedisCommandImpl<std::string> redisCmd(vecParams, BIND_STR());
+    if (!pRedisServ->ServRequest(&redisCmd) ||
+        !ConvertInfoToMap(redisCmd.GetResult(), mapInfo))
         return false;
 
     auto it = mapInfo.find("cluster_enabled");
@@ -749,15 +384,15 @@ bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeou
 bool CRedisClient::Request(CRedisCommand *pRedisCmd)
 {
     if (!m_bValid)
-        return false;
+        return pRedisCmd->SetErrInfo(RC_RQST_ERR, "Cannot connect to redis");
 
     CSafeLock safeLock(&m_rwLock);
     if (!safeLock.ReadLock() || !m_bValid)
-        return false;
+        return pRedisCmd->SetErrInfo(RC_RQST_ERR, "Cannot connect to redis");
 
     CRedisServer *pRedisServ = MatchServer(pRedisCmd->GetSlot());
     if (!pRedisServ)
-        return false;
+        return pRedisCmd->SetErrInfo(RC_RQST_ERR, "No matched server");
 
     if (pRedisServ->ServRequest(pRedisCmd))
         return true;
@@ -772,26 +407,26 @@ bool CRedisClient::Request(CRedisCommand *pRedisCmd)
     }
 }
 
-bool CRedisClient::Request(CRedisPipeline *pRedisPipe)
+bool CRedisClient::Request(CRedisPipeline &redisPipe)
 {
     int nRetryTime = 0;
-    bool bRet = false;
+    bool bRet = true;
     while (1)
     {
         CRedisServer *pRedisServ = nullptr;
         std::map<CRedisServer *, CRedisCommandAry> mapCmd;
-        for (auto &pRedisCmd : pRedisPipe->m_vecCmd)
+        for (int i = 0; i < redisPipe.Size(); ++i)
         {
-            if (!(pRedisServ = MatchServer(pRedisCmd->GetSlot())))
-                return false;
+            if (!(pRedisServ = MatchServer(redisPipe[i]->GetSlot())))
+                return redisPipe.SetErrInfo(RC_RQST_ERR, "No matched server");
 
             auto it = mapCmd.find(pRedisServ);
             if (it != mapCmd.end())
-                it->second.Append(pRedisCmd);
+                it->second.Append(redisPipe[i]);
             else
             {
                 CRedisCommandAry redisCmdAry;
-                redisCmdAry.Append(pRedisCmd);
+                redisCmdAry.Append(redisPipe[i]);
                 mapCmd.insert(std::make_pair(pRedisServ, redisCmdAry));
             }
         }
@@ -802,11 +437,9 @@ bool CRedisClient::Request(CRedisPipeline *pRedisPipe)
             bRet = it->first->ServRequest(it->second);
             if (!bRet)
             {
-                pRedisPipe->m_nErrCode = it->second.m_nErrCode;
-                pRedisPipe->m_strErrMsg = it->second.m_strErrMsg;
-
-                if ((it->second->GetErrCode() == RC_RQST_ERR ||
-                    it->second->GetErrCode() == RC_MOVED_ERR) &&
+                redisPipe.SetErrInfo(it->second.GetErrCode(), it->second.GetErrMsg());
+                if ((it->second.GetErrCode() == RC_RQST_ERR ||
+                    it->second.GetErrCode() == RC_MOVED_ERR) &&
                     nRetryTime++ <= 1 &&
                     WaitForRefresh())
                 {
@@ -837,6 +470,38 @@ void CRedisClient::operator()()
         if (!m_bValid)
             std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+}
+
+void CRedisClient::CleanServer()
+{
+    m_vecSlot.clear();
+    for (auto pRedisServ : m_vecRedisServ)
+        delete pRedisServ;
+    m_vecRedisServ.clear();
+}
+
+CRedisServer * CRedisClient::MatchServer(int nSlot) const
+{
+    if (m_bCluster && nSlot != -1)
+        return FindServer(nSlot);
+    else
+    {
+        for (auto &pRedisServ : m_vecRedisServ)
+        {
+            if (pRedisServ->IsValid())
+                return pRedisServ;
+        }
+        return nullptr;
+    }
+}
+
+CRedisServer * CRedisClient::FindServer(int nSlot) const
+{
+    auto pairIter = std::equal_range(m_vecSlot.begin(), m_vecSlot.end(), nSlot, CompSlot());
+    if (pairIter.first != m_vecSlot.end() && pairIter.first != pairIter.second)
+        return pairIter.first->pRedisServ;
+    else
+        return nullptr;
 }
 
 bool CRedisClient::LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo)
@@ -875,10 +540,8 @@ bool CRedisClient::LoadSlaveInfo(const std::map<std::string, std::string> &mapIn
 bool CRedisClient::LoadClusterSlots()
 {
     std::vector<CRedisServer *> vecRedisServ;
-    std::vector<SlotRegion> vecSlot;
-    CRedisCommand redisCmd("cluster");
-    redisCmd.SetArgs("slots");
-
+    std::vector<std::string> vecParams = {"cluster", "slots"};
+    CRedisCommandImpl<std::vector<SlotRegion> > redisCmd(vecParams, BIND_SLOT());
     for (size_t i = 0; i < m_vecRedisServ.size(); ++i)
     {
         CRedisServer *pRedisServ = m_vecRedisServ[i];
@@ -890,14 +553,16 @@ bool CRedisClient::LoadClusterSlots()
         }
 
         CRedisServer *pSlotServ = nullptr;
-        if (pRedisServ->ServRequest(&redisCmd) == RC_SUCCESS &&
-            redisCmd.FetchResult(BIND_SLOT(&vecSlot)) == RC_SUCCESS)
+        if (pRedisServ->ServRequest(&redisCmd))
         {
+            std::vector<SlotRegion> &vecSlot = redisCmd.GetResult();
             for (auto &slotReg : vecSlot)
             {
-                if (!(pSlotServ = FindServer(vecRedisServ, slotReg.strHost, slotReg.nPort)))
+                if (!(pSlotServ = FindServer(vecRedisServ, slotReg.vecHost[0].first, slotReg.vecHost[0].second)))
                 {
-                    pSlotServ = new CRedisServer(slotReg.strHost, slotReg.nPort, m_nTimeout, m_nConnNum);
+                    pSlotServ = new CRedisServer(slotReg.vecHost[0].first, slotReg.vecHost[0].second, m_nTimeout, m_nConnNum);
+                    for (size_t i = 1; i < slotReg.vecHost.size(); ++i)
+                        pSlotServ->SetSlave(slotReg.vecHost[i].first, slotReg.vecHost[i].second);
                     if (!pSlotServ->IsValid())
                     {
                         for (auto pRedisServ : vecRedisServ)
@@ -910,9 +575,9 @@ bool CRedisClient::LoadClusterSlots()
             }
 
             CleanServer();
-            std::sort(vecSlot.begin(), vecSlot.end());
             m_vecRedisServ = vecRedisServ;
             m_vecSlot = vecSlot;
+            std::sort(m_vecSlot.begin(), m_vecSlot.end());
             return true;
         }
     }
@@ -931,38 +596,6 @@ bool CRedisClient::WaitForRefresh()
     while (!m_bValid && nRetry-- > 0)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     return m_bValid;
-}
-
-void CRedisClient::CleanServer()
-{
-    m_vecSlot.clear();
-    for (auto pRedisServ : m_vecRedisServ)
-        delete pRedisServ;
-    m_vecRedisServ.clear();
-}
-
-CRedisServer * CRedisClient::MatchServer(int nSlot) const
-{
-    if (m_bCluster && nSlot != -1)
-        return FindServer(pRedisCmd->GetSlot());
-    else
-    {
-        for (auto &pRedisServ : m_vecRedisServ)
-        {
-            if (pRedisServ->IsValid())
-                return pRedisServ;
-        }
-        return nullptr;
-    }
-}
-
-CRedisServer * CRedisClient::FindServer(int nSlot) const
-{
-    auto pairIter = std::equal_range(m_vecSlot.begin(), m_vecSlot.end(), nSlot, CompSlot());
-    if (pairIter.first != m_vecSlot.end() && pairIter.first != pairIter.second)
-        return pairIter.first->pRedisServ;
-    else
-        return nullptr;
 }
 
 bool CRedisClient::OnSameServer(const std::string &strKey1, const std::string &strKey2) const
@@ -1000,7 +633,7 @@ bool CRedisClient::ConvertInfoToMap(const std::string &strVal, std::map<std::str
     return true;
 }
 
-CRedisServer * CRedisClient::FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort) const
+CRedisServer * CRedisClient::FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort)
 {
     for (auto &pRedisServ : vecRedisServ)
     {
@@ -1010,34 +643,4 @@ CRedisServer * CRedisClient::FindServer(const std::vector<CRedisServer *> &vecRe
     return nullptr;
 }
 
-//////////// new ///////////
-bool CRedisClient::Execute(CRedisCommand *pRedisCmd)
-{
-    if (!m_bValid)
-        return false;
 
-    CSafeLock safeLock(&m_rwLock);
-    if (!safeLock.ReadLock() || !m_bValid)
-        return false;
-
-    CRedisServer *pRedisServ = MatchServer(pRedisCmd->GetSlot());
-    if (!pRedisServ)
-        return false;
-
-    if (pRedisServ->ServRequest(pRedisCmd))
-        return true;
-    else
-    {
-        if ((pRedisCmd->GetErrCode() == RC_RQST_ERR ||
-            pRedisCmd->GetErrCode() == RC_MOVED_ERR) &&
-            WaitForRefresh())
-            return pRedisServ->ServRequest(pRedisCmd);
-        else
-            return false;
-    }
-}
-
-bool CRedisClient::Execute(CRedisPipeline *pRedisPipe)
-{
-
-}
