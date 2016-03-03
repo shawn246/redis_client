@@ -27,6 +27,7 @@
 typedef std::vector<std::string> VECSTR;
 
 uint32_t HASH_SLOT(const std::string &strKey);
+std::ostream & operator<<(std::ostream &os, redisReply *pReply);
 
 class CRedisServer;
 struct SlotRegion

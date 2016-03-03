@@ -83,7 +83,7 @@ uint32_t HASH_SLOT(const std::string &strKey)
     return CRC16(pszKey + nStart + 1, nEnd - nStart - 1) & 16383;
 }
 
-static inline std::ostream & operator<<(std::ostream &os, const std::pair<int, redisReply *> &pairReply)
+std::ostream & operator<<(std::ostream &os, const std::pair<int, redisReply *> &pairReply)
 {
     int nLevel = pairReply.first;
     redisReply *pReply = pairReply.second;
@@ -114,7 +114,7 @@ static inline std::ostream & operator<<(std::ostream &os, const std::pair<int, r
     return os;
 }
 
-static inline std::ostream & operator<<(std::ostream &os, redisReply *pReply)
+std::ostream & operator<<(std::ostream &os, redisReply *pReply)
 {
     return os << std::make_pair(0, pReply);
 }
