@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <pthread.h>
 #include <string.h>
+#include <stdarg.h>
 
 #define RC_REPLY_NIL        1
 #define RC_SUCCESS          0
@@ -24,10 +25,14 @@
 #define RQST_RETRY_TIMES    3
 #define WAIT_RETRY_TIMES    60
 
-typedef std::vector<std::string> VECSTR;
+typedef std::vector<std::string> STRVEC;
+typedef std::map<std::string, std::string> STRMAP;
 
 uint32_t HASH_SLOT(const std::string &strKey);
 std::ostream & operator<<(std::ostream &os, redisReply *pReply);
+
+void ConvertStrToVec(STRVEC &vecVal, int nCount, ...);
+void ConvertVecToVec(STRVEC &vecVal, int nCount, ...);
 
 class CRedisServer;
 struct SlotRegion
@@ -81,7 +86,7 @@ static inline bool FetchStringArray(redisReply *pReply, std::vector<std::string>
     return false;
 }
 
-static inline bool FetchStringMap(redisReply *pReply, std::map<std::string, std::string> &mapStrVal)
+static inline bool FetchStringMap(redisReply *pReply, STRMAP &mapStrVal)
 {
     if (pReply->type == REDIS_REPLY_ARRAY)
     {
@@ -188,7 +193,7 @@ public:
             nErrCode = RC_MOVED_ERR;
         m_nErrCode = nErrCode;
         m_strErrMsg = strErrMsg;
-        return m_nErrCode == RC_SUCCESS;
+        return m_nErrCode >= 0;
     }
 
     int GetErrCode() const { return m_nErrCode; }
@@ -242,17 +247,14 @@ public:
         else if (m_pReply->type == REDIS_REPLY_ERROR)
             return SetErrInfo(RC_REPLY_ERR, m_pReply->str);
         else if (m_pReply->type == REDIS_REPLY_NIL)
-        {
-            m_bNil = true;
-            return true;
-        }
-        return m_funcConv(m_pReply, m_resVal) ? true : SetErrInfo(RC_REPLY_ERR, "Parse reply failed");
+            return SetErrInfo(RC_REPLY_NIL);
+        else
+            return m_funcConv(m_pReply, m_resVal) ? true : SetErrInfo(RC_REPLY_ERR, "Parse reply failed");
     }
 
 public:
     redisReply *m_pReply;
     T m_resVal;
-    bool m_bNil;
     std::function<bool (redisReply *, T &)> m_funcConv;
 };
 
@@ -260,7 +262,7 @@ template <typename T>
 class CRedisCommandImpl : public CRedisReply<T>
 {
 public:
-    CRedisCommandImpl(const VECSTR &vecParams, std::function<bool (redisReply *, T &)> funcConv, int nSlot = -1)
+    CRedisCommandImpl(const STRVEC &vecParams, std::function<bool (redisReply *, T &)> funcConv, int nSlot = -1)
         : CRedisReply<T>(funcConv), m_pszArgs(nullptr), m_pnArgsLen(nullptr), m_nSlot(nSlot)
     {
         m_nArgs = vecParams.size();
@@ -438,15 +440,15 @@ private:
     CRedisServer * MatchServer(int nSlot) const;
     CRedisServer * FindServer(int nSlot) const;
 
-    bool LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo);
+    bool LoadSlaveInfo(const STRMAP &mapInfo);
     bool LoadClusterSlots();
     bool WaitForRefresh();
 
     bool OnSameServer(const std::string &strKey1, const std::string &strKey2) const;
-    bool OnSameServer(const std::vector<std::string> &vecKey) const;
+    bool OnSameServer(const STRVEC &vecKey) const;
 
 private:
-    static bool ConvertInfoToMap(const std::string &strVal, std::map<std::string, std::string> &mapVal);
+    static bool ConvertInfoToMap(const std::string &strVal, STRMAP &mapVal);
     static CRedisServer * FindServer(const std::vector<CRedisServer *> &vecRedisServ, const std::string &strHost, int nPort);
 
 private:

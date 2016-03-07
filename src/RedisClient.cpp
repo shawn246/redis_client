@@ -119,6 +119,33 @@ std::ostream & operator<<(std::ostream &os, redisReply *pReply)
     return os << std::make_pair(0, pReply);
 }
 
+void ConvertStrToVec(STRVEC &vecVal, int nCount, ...)
+{
+    va_list vlist;
+    va_start(vlist, nCount);
+    for (int i = 0; i < nCount; ++i)
+        vecVal.push_back(*(va_arg(vlist, std::string *)));
+    va_end(vlist);
+}
+
+void ConvertVecToVec(STRVEC &vecVal, int nCount, ...)
+{
+    va_list vlist;
+    va_start(vlist, nCount);
+    std::vector<STRVEC *> vecStrVec;
+    for (int i = 0; i < nCount; ++i)
+        vecStrVec.push_back(va_arg(vlist, STRVEC *));
+    if (!vecStrVec.empty())
+    {
+        for (size_t i = 0; i < vecStrVec[0]->size(); ++i)
+        {
+            for (auto pvecVal : vecStrVec)
+                vecVal.push_back((*pvecVal)[i]);
+        }
+    }
+    va_end(vlist);
+}
+
 // for finding matched slot/server with binary search
 bool operator< (const SlotRegion &lReg, const SlotRegion &rReg)
 {
@@ -273,8 +300,8 @@ bool CRedisServer::Initialize()
 
     if (!m_queIdleConn.empty())
     {
-        std::vector<std::string> vecParams = {"config", "get", "timeout"};
-        CRedisCommandImpl<VECSTR> redisCmd(vecParams, BIND_VSTR());
+        STRVEC vecParams = {"config", "get", "timeout"};
+        CRedisCommandImpl<STRVEC> redisCmd(vecParams, BIND_VSTR());
         if (ServRequest(&redisCmd) && redisCmd.GetResult().size() == 2)
             m_nSerTimeout = atoi((redisCmd.GetResult())[1].c_str());
     }
@@ -362,8 +389,8 @@ bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeou
     if (!pRedisServ->IsValid())
         return false;
 
-    std::map<std::string, std::string> mapInfo;
-    std::vector<std::string> vecParams = {"info"};
+    STRMAP mapInfo;
+    STRVEC vecParams = {"info"};
     CRedisCommandImpl<std::string> redisCmd(vecParams, BIND_STR());
     if (!pRedisServ->ServRequest(&redisCmd) ||
         !ConvertInfoToMap(redisCmd.GetResult(), mapInfo))
@@ -504,7 +531,7 @@ CRedisServer * CRedisClient::FindServer(int nSlot) const
         return nullptr;
 }
 
-bool CRedisClient::LoadSlaveInfo(const std::map<std::string, std::string> &mapInfo)
+bool CRedisClient::LoadSlaveInfo(const STRMAP &mapInfo)
 {
     auto it = mapInfo.find("connected_slaves");
     if (it == mapInfo.end())
@@ -540,7 +567,7 @@ bool CRedisClient::LoadSlaveInfo(const std::map<std::string, std::string> &mapIn
 bool CRedisClient::LoadClusterSlots()
 {
     std::vector<CRedisServer *> vecRedisServ;
-    std::vector<std::string> vecParams = {"cluster", "slots"};
+    STRVEC vecParams = {"cluster", "slots"};
     CRedisCommandImpl<std::vector<SlotRegion> > redisCmd(vecParams, BIND_SLOT());
     for (size_t i = 0; i < m_vecRedisServ.size(); ++i)
     {
@@ -603,7 +630,7 @@ bool CRedisClient::OnSameServer(const std::string &strKey1, const std::string &s
     return m_bCluster ? FindServer(HASH_SLOT(strKey1)) == FindServer(HASH_SLOT(strKey2)) : true;
 }
 
-bool CRedisClient::OnSameServer(const std::vector<std::string> &vecKey) const
+bool CRedisClient::OnSameServer(const STRVEC &vecKey) const
 {
     if (m_bCluster || vecKey.size() <= 1)
         return true;
@@ -616,7 +643,7 @@ bool CRedisClient::OnSameServer(const std::vector<std::string> &vecKey) const
     return true;
 }
 
-bool CRedisClient::ConvertInfoToMap(const std::string &strVal, std::map<std::string, std::string> &mapVal)
+bool CRedisClient::ConvertInfoToMap(const std::string &strVal, STRMAP &mapVal)
 {
     std::stringstream ss(strVal);
     std::string strLine;
