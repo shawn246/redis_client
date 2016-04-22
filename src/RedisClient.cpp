@@ -1193,6 +1193,7 @@ int CRedisClient::Mget(const std::vector<std::string> &vecKey, std::vector<std::
                 }
             }
         }
+        FreePipeline(ppLine);
         return nRet;
     }
 }
@@ -1226,6 +1227,7 @@ int CRedisClient::Mset(const std::vector<std::string> &vecKey, const std::vector
                     nRet = RC_PART_SUCCESS;
             }
         }
+        FreePipeline(ppLine);
         return nRet;
     }
     return 0;
