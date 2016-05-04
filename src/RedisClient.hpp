@@ -128,7 +128,7 @@ class CRedisConnection
 {
 public:
     CRedisConnection(CRedisServer *pRedisServ);
-
+    ~CRedisConnection();
     bool IsValid() { return m_pContext != nullptr; }
     int ConnRequest(CRedisCommand *pRedisCmd);
     int ConnRequest(std::vector<CRedisCommand *> &vecRedisCmd);
