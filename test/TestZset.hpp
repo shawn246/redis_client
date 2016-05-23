@@ -27,6 +27,7 @@ public:
     bool Test_Zscan();
     bool Test_Zscore();
     bool Test_Zunionstore();
+    bool Test_Zrangewithscore();
 };
 
 #endif

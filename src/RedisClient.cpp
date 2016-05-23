@@ -1571,6 +1571,11 @@ int CRedisClient::Zrange(const std::string &strKey, long nStart, long nStop, std
     return ExecuteImpl("zrange", strKey, ConvertToString(nStart), ConvertToString(nStop), HASH_SLOT(strKey), ppLine, BIND_VSTR(pvecVal));
 }
 
+int CRedisClient::Zrangewithscore(const std::string &strKey, long nStart, long nStop, std::map<std::string, std::string> *pmapVal, Pipeline ppLine)
+{
+    return ExecuteImpl("zrange", strKey, ConvertToString(nStart), ConvertToString(nStop), std::string("WITHSCORES"), HASH_SLOT(strKey), ppLine, BIND_MAP(pmapVal));
+}
+
 int CRedisClient::Zrangebylex(const std::string &strKey, const std::string &strMin, const std::string &strMax, std::vector<std::string> *pvecVal, Pipeline ppLine)
 {
     return ExecuteImpl("zrangebylex", strKey, strMin, strMax, HASH_SLOT(strKey), ppLine, BIND_VSTR(pvecVal));

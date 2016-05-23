@@ -15,7 +15,7 @@ bool CTestZset::StartTest(const std::string &strHost)
                    Test_Zlexcount() && Test_Zrangebylex() && Test_Zrangebyscore() && Test_Zrank() &&
                    Test_Zrem() && Test_Zremrangebylex() && Test_Zremrangebyrank() && Test_Zremrangebyscore() &&
                    Test_Zrevrange() && Test_Zrevrangebyscore() && Test_Zrevrank() && Test_Zscan() &&
-                   Test_Zscore() && Test_Zunionstore();
+                   Test_Zscore() && Test_Zunionstore() && Test_Zrangewithscore();
     std::cout << std::endl;
     return bSuccess;
 }
@@ -343,5 +343,23 @@ bool CTestZset::Test_Zscore()
 bool CTestZset::Test_Zunionstore()
 {
     return true;
+}
+
+bool CTestZset::Test_Zrangewithscore()
+{
+    if (!InitStringEnv(1, 1) || !InitZsetEnv(5, 4))
+        return PrintResult("zrangewithscore", false);
+
+    bool bSuccess = false;
+    std::map<std::string, std::string> mapVal;
+    if (//m_redis.Zrangewithscore("tk_str_1", 0, -1, &mapVal) == RC_REPLY_ERR &&
+        //m_redis.Zrangewithscore("tk_zset_5", 0, -1, &mapVal) == RC_SUCCESS && mapVal.empty() &&
+        m_redis.Zrangewithscore("tk_zset_4", 0, -1, &mapVal) == RC_SUCCESS && mapVal.size() == 4 &&
+        IsPairInMap(std::string("value_1"), std::string("1"), mapVal) &&
+        IsPairInMap(std::string("value_2"), std::string("2"), mapVal) &&
+        IsPairInMap(std::string("value_3"), std::string("3"), mapVal) &&
+        IsPairInMap(std::string("value_4"), std::string("4"), mapVal))
+        bSuccess = true;
+    return PrintResult("zrangewithscore", bSuccess);
 }
 

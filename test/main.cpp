@@ -10,35 +10,35 @@
 
 int main(int argc, char **argv)
 {
-    std::string strHost = "10.10.100.5";
-    //std::string strHost = "192.168.1.5";
+    //std::string strHost = "10.10.100.5";
+    std::string strHost = "192.168.1.7";
     //std::string strHost = "127.0.0.1";
 
     while (1)
     {
-        CTestBase testBase;
-        if (!testBase.StartTest(strHost))
-            break;
+        //CTestBase testBase;
+        //if (!testBase.StartTest(strHost))
+        //    break;
 
-        CTestGeneric testKeys;
-        if (!testKeys.StartTest(strHost))
-            break;
+        //CTestGeneric testKeys;
+        //if (!testKeys.StartTest(strHost))
+        //    break;
 
-        CTestString testStr;
-        if (!testStr.StartTest(strHost))
-            break;
+        //CTestString testStr;
+        //if (!testStr.StartTest(strHost))
+        //    break;
 
-        CTestList testList;
-        if (!testList.StartTest(strHost))
-            break;
+        //CTestList testList;
+        //if (!testList.StartTest(strHost))
+        //    break;
 
-        CTestSet testSet;
-        if (!testSet.StartTest(strHost))
-            break;
+        //CTestSet testSet;
+        //if (!testSet.StartTest(strHost))
+        //    break;
 
-        CTestHash testHash;
-        if (!testHash.StartTest(strHost))
-            break;
+        //CTestHash testHash;
+        //if (!testHash.StartTest(strHost))
+        //    break;
 
         CTestZset testZset;
         if (!testZset.StartTest(strHost))
