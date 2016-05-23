@@ -514,6 +514,15 @@ void CRedisCommand::SetArgs(const std::string &strArg1, const std::string &strAr
     AppendValue(strArg3);
 }
 
+void CRedisCommand::SetArgs(const std::string &strArg1, const std::string &strArg2, const std::vector<std::string> &vecArg3)
+{
+    InitMemory(vecArg3.size() + 3);
+    AppendValue(strArg1);
+    AppendValue(strArg2);
+    for (auto &strArg : vecArg3)
+        AppendValue(strArg);
+}
+
 void CRedisCommand::SetArgs(const std::string &strArg1, const std::vector<std::string> &vecArg2, const std::vector<std::string> &vecArg3)
 {
     InitMemory(vecArg2.size() * 2 + 2);
@@ -1109,6 +1118,31 @@ int CRedisClient::Type(const std::string &strKey, std::string *pstrVal, Pipeline
 int CRedisClient::Append(const std::string &strKey, const std::string &strVal, long *pnVal, Pipeline ppLine)
 {
     return ExecuteImpl("append", strKey, strVal, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
+}
+
+int CRedisClient::Bitcount(const std::string &strKey, long *pnVal, Pipeline ppLine)
+{
+    return ExecuteImpl("bitcount", strKey, HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
+}
+
+int CRedisClient::Bitcount(const std::string &strKey, long nStart, long nEnd, long *pnVal, Pipeline ppLine)
+{
+    return ExecuteImpl("bitcount", strKey, ConvertToString(nStart), ConvertToString(nEnd), HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
+}
+
+int CRedisClient::Bitop(const std::string &strDestKey, const std::string &strOp, const std::vector<std::string> &vecKey, long *pnVal, Pipeline ppLine)
+{
+    return ExecuteImpl("bitop", strOp, strDestKey, vecKey, HASH_SLOT(strDestKey), ppLine, BIND_INT(pnVal));
+}
+
+int CRedisClient::Bitpos(const std::string &strKey, long nBitVal, long *pnVal, Pipeline ppLine)
+{
+    return ExecuteImpl("bitpos", strKey, ConvertToString(nBitVal), HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
+}
+
+int CRedisClient::Bitpos(const std::string &strKey, long nBitVal, long nStart, long nEnd, long *pnVal, Pipeline ppLine)
+{
+    return ExecuteImpl("bitpos", strKey, ConvertToString(nBitVal), ConvertToString(nStart), ConvertToString(nEnd), HASH_SLOT(strKey), ppLine, BIND_INT(pnVal));
 }
 
 int CRedisClient::Decr(const std::string &strKey, long *pnVal, Pipeline ppLine)

@@ -11,11 +11,11 @@ bool CTestString::StartTest(const std::string &strHost)
     if (!m_redis.Initialize(strHost, 6379, 2, 10))
         std::cout << "init redis client failed" << std::endl;
     else
-        bSuccess = Test_Append() && Test_Bitcount() && Test_Decr() && Test_Decrby() &&
-                   Test_Getbit() && Test_Getrange() && Test_Getset() && Test_Incr() &&
-                   Test_Incrby() && Test_Incrbyfloat() && Test_Mget() && Test_Mset() &&
-                   Test_Psetex() && Test_Setbit() && Test_Setex() && Test_Setnx() &&
-                   Test_Setrange() && Test_Strlen();
+        bSuccess = Test_Append() && Test_Bitcount() && Test_Bitop() && Test_Bitpos() &&
+                   Test_Decr() && Test_Decrby() && Test_Getbit() && Test_Getrange() &&
+                   Test_Getset() && Test_Incr() && Test_Incrby() && Test_Incrbyfloat() &&
+                   Test_Mget() && Test_Mset() && Test_Psetex() && Test_Setbit() &&
+                   Test_Setex() && Test_Setnx() && Test_Setrange() && Test_Strlen();
     std::cout << std::endl;
     return bSuccess;
 }
@@ -38,7 +38,62 @@ bool CTestString::Test_Append()
 
 bool CTestString::Test_Bitcount()
 {
-    return true;
+    if (!InitStringEnv(2, 1) || !InitListEnv(1, 1))
+        return PrintResult("bitcount", false);
+
+    bool bSuccess = false;
+    long nVal;
+    if (m_redis.Bitcount("tk_str_2", &nVal) == RC_SUCCESS && nVal == 0 &&
+        m_redis.Bitcount("tk_list_1", &nVal) == RC_REPLY_ERR &&
+        m_redis.Bitcount("tk_str_1", &nVal) == RC_SUCCESS && nVal == 30 &&
+        m_redis.Bitcount("tk_str_1", 0, 0, &nVal) == RC_SUCCESS && nVal == 5 &&
+        m_redis.Bitcount("tk_str_1", 1, 3, &nVal) == RC_SUCCESS && nVal == 12 &&
+        m_redis.Bitcount("tk_str_1", 2, -1, &nVal) == RC_SUCCESS && nVal == 22)
+        bSuccess = true;
+    return PrintResult("bitcount", bSuccess);
+}
+
+bool CTestString::Test_Bitop()
+{
+    if (!InitStringEnv(10, 0) || !InitListEnv(1, 1))
+        return PrintResult("bitop", false);
+
+    bool bSuccess = false;
+    long nVal;
+    std::string strVal;
+    std::vector<std::string> v1 = {"tk_str_1", "tk_str_2"};
+    std::vector<std::string> v2 = {"tk_str_1", "tk_str_2"};
+    if (m_redis.Set("tk_str_1", "\x86") == RC_SUCCESS &&
+        m_redis.Set("tk_str_2", "\x2b") == RC_SUCCESS &&
+        m_redis.Set("tk_str_3", "\xae\xc8") == RC_SUCCESS &&
+        m_redis.Bitop("tk_str_4", "AND", v1, &nVal) == RC_SUCCESS &&
+        m_redis.Get("tk_str_4", &strVal) == RC_SUCCESS && nVal == 1 && strVal == "\x02" &&
+        m_redis.Bitop("tk_str_5", "OR", v1, &nVal) == RC_SUCCESS &&
+        m_redis.Get("tk_str_5", &strVal) == RC_SUCCESS && nVal == 1 && strVal == "\xaf")
+        bSuccess = true;
+    return PrintResult("bitop", bSuccess);
+}
+
+bool CTestString::Test_Bitpos()
+{
+    if (!InitStringEnv(3, 0) || !InitListEnv(1, 1))
+        return PrintResult("bitpos", false);
+
+    bool bSuccess = false;
+    long nVal;
+    if (m_redis.Set("tk_str_1", "\xff\xff\x0f") == RC_SUCCESS &&
+        m_redis.Set("tk_str_2", "\xff\xff") == RC_SUCCESS &&
+        m_redis.Bitpos("tk_list_1", 0, &nVal) == RC_REPLY_ERR &&
+        m_redis.Bitpos("tk_str_1", 1, &nVal) == RC_SUCCESS && nVal == 0 &&
+        m_redis.Bitpos("tk_str_1", 0, &nVal) == RC_SUCCESS && nVal == 16 &&
+        m_redis.Bitpos("tk_str_2", 0, &nVal) == RC_SUCCESS && nVal == 16 &&
+        m_redis.Bitpos("tk_str_3", 0, &nVal) == RC_SUCCESS && nVal == 0 &&
+        m_redis.Bitpos("tk_str_3", 1, &nVal) == RC_SUCCESS && nVal == -1 &&
+        m_redis.Bitpos("tk_str_1", 1, 0, 1, &nVal) == RC_SUCCESS && nVal == 0 &&
+        m_redis.Bitpos("tk_str_1", 0, 0, 1, &nVal) == RC_SUCCESS && nVal == -1 &&
+        m_redis.Bitpos("tk_str_1", 0, 1, 2, &nVal) == RC_SUCCESS && nVal == 16)
+        bSuccess = true;
+    return PrintResult("bitpos", bSuccess);
 }
 
 bool CTestString::Test_Decr()

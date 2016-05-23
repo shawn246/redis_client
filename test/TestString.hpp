@@ -12,6 +12,8 @@ public:
 private:
     bool Test_Append();
     bool Test_Bitcount();
+    bool Test_Bitop();
+    bool Test_Bitpos();
     bool Test_Decr();
     bool Test_Decrby();
     bool Test_Getbit();

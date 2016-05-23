@@ -97,6 +97,7 @@ public:
     void SetArgs(const std::map<std::string, std::string> &mapArg);
     void SetArgs(const std::string &strArg1, const std::map<std::string, std::string> &mapArg2);
     void SetArgs(const std::string &strArg1, const std::string &strArg2, const std::string &strArg3);
+    void SetArgs(const std::string &strArg1, const std::string &strArg2, const std::vector<std::string> &vecArg2);
     void SetArgs(const std::string &strArg1, const std::vector<std::string> &vecArg2, const std::vector<std::string> &vecArg3);
     void SetArgs(const std::string &strArg1, const std::string &strArg2, const std::string &strArg3, const std::string &strArg4);
 
@@ -243,11 +244,16 @@ public:
 
     /* interfaces for string */
     int Append(const std::string &strKey, const std::string &strVal, long *pnVal = nullptr, Pipeline ppLine = nullptr);
+    int Bitcount(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
+    int Bitcount(const std::string &strKey, long nStart, long nEnd, long *pnVal, Pipeline ppLine = nullptr);
+    int Bitop(const std::string &strDestKey, const std::string &strOp, const std::vector<std::string> &vecKey, long *pnVal = nullptr, Pipeline ppLine = nullptr);
+    int Bitpos(const std::string &strKey, long nBitVal, long *pnVal, Pipeline ppLine = nullptr);
+    int Bitpos(const std::string &strKey, long nBitVal, long nStart, long nEnd, long *pnVal, Pipeline ppLine = nullptr);
     int Decr(const std::string &strKey, long *pnVal = nullptr, Pipeline ppLine = nullptr);
     int Decrby(const std::string &strKey, long nDecr, long *pnVal = nullptr, Pipeline ppLine = nullptr);
     int Get(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
     int Getbit(const std::string &strKey, long nOffset, long *pnVal, Pipeline ppLine = nullptr);
-    int Getrange(const std::string &strKey, long nStart, long nStop, std::string *pstrVal, Pipeline ppLine = nullptr);
+    int Getrange(const std::string &strKey, long nStart, long nEnd, std::string *pstrVal, Pipeline ppLine = nullptr);
     int Getset(const std::string &strKey, std::string *pstrVal, Pipeline ppLine = nullptr);
     int Incr(const std::string &strKey, long *pnVal, Pipeline ppLine = nullptr);
     int Incrby(const std::string &strKey, long nIncr, long *pnVal, Pipeline ppLine = nullptr);
