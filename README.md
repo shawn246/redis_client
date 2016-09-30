@@ -16,6 +16,10 @@
 - Support pub/sub and transaction.
 - Support scan in an unsafe way.
 
+# License
+
+This program was written by Shawn XU and is released under the BSD license.
+
 # Usage
 
 ```c++
