@@ -31,6 +31,7 @@
 #define RC_NOT_SUPPORT      -6
 #define RC_SLOT_CHANGED     -100
 
+#define CONN_IDLE_SEC_MAX 300
 
 #define FUNC_DEF_CONV       [](int nRet, redisReply *) { return nRet; }
 
@@ -147,6 +148,8 @@ public:
     std::string toString();
     bool IsBad() { return m_bbad; }
     void SetBad() { m_bbad = true;}
+    void SetUseStamp(int t) { m_nUsestamp = t; }
+    int GetUseStamp() { return m_nUsestamp; }
 
 private:
     bool ConnectToRedis(const std::string &strHost, int nPort, int nTimeout, const std::string& auth);
@@ -157,6 +160,7 @@ private:
     time_t m_nUseTime;
     CRedisServer *m_pRedisServ;
     bool m_bbad;
+    int m_nUsestamp;
 };
 
 class CRedisServer
@@ -164,7 +168,7 @@ class CRedisServer
     friend class CRedisConnection;
     friend class CRedisClient;
 public:
-    CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNum, const std::string& strAuth="");
+    CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNumMin, int nConnNumMax, const std::string& strAuth="");
     virtual ~CRedisServer();
     // muste call CleanConn before delete CRedisServer.
     int CleanConn();
@@ -190,12 +194,13 @@ private:
 private:
     std::string m_strHost;
     int m_nPort;
-    int m_nCliTimeout;
-    int m_nSerTimeout;
-    int m_nConnNum;
+    int m_nTimeout;
+    int m_nConnNumMin;
+    int m_nConnNumMax;
     std::string m_strAuth;
 
-    std::queue<CRedisConnection *> m_queIdleConn;
+//    std::queue<CRedisConnection *> m_queIdleConn;
+    std::list<CRedisConnection *> m_queIdleConn;
     std::map<CRedisConnection*, bool> m_mapConn;
     std::mutex m_mutexConn;
 };
@@ -229,7 +234,7 @@ public:
     CRedisClient();
     ~CRedisClient();
 
-    bool Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNum, const std::string& auth="");
+    bool Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNumMin, int nConnNumMax, const std::string& auth="");
     bool IsCluster() { return m_bCluster; }
 
     Pipeline CreatePipeline();
@@ -482,7 +487,8 @@ private:
     std::string m_strHost;
     int m_nPort;
     int m_nTimeout;
-    int m_nConnNum;
+    int m_nConnNumMin;
+    int m_nConnNumMax;
     bool m_bCluster;
     bool m_bValid;
     bool m_bExit;

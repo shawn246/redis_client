@@ -1,4 +1,5 @@
 #include "RedisClient.hpp"
+#include <unistd.h>
 
 #define BIND_INT(val) std::bind(&FetchInteger, std::placeholders::_1, val)
 #define BIND_STR(val) std::bind(&FetchString, std::placeholders::_1, val)
@@ -617,6 +618,9 @@ int CRedisCommand::CmdRequest(redisContext *pContext)
     }
 
     m_pReply = static_cast<redisReply *>(redisCommandArgv(pContext, m_nArgs, (const char **)m_pszArgs, (const size_t *)m_pnArgsLen));
+    if (m_pReply==nullptr) {
+      MYLOG("redis reply error: %s\n", pContext->errstr);
+    }
     return m_pReply ? RC_SUCCESS : RC_RQST_ERR;
 }
 
@@ -733,21 +737,23 @@ bool CRedisConnection::ConnectToRedis(const std::string &strHost, int nPort, int
     }
 
     redisSetTimeout(m_pContext, tmTimeout);
+    SetUseStamp(time(NULL));
     return true;
 }
 
 bool CRedisConnection::connect()
 {
     if (!m_pRedisServ->m_strHost.empty() &&
-        ConnectToRedis(m_pRedisServ->m_strHost, m_pRedisServ->m_nPort, m_pRedisServ->m_nCliTimeout, m_pRedisServ->m_strAuth)) {
+        ConnectToRedis(m_pRedisServ->m_strHost, m_pRedisServ->m_nPort, m_pRedisServ->m_nTimeout, m_pRedisServ->m_strAuth)) {
         return true;
     }
     return false;
 }
 
 // CRedisServer methods
-CRedisServer::CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNum, const std::string& strAuth)
-    : m_strHost(strHost), m_nPort(nPort), m_nCliTimeout(nTimeout), m_nSerTimeout(0), m_nConnNum(nConnNum),
+CRedisServer::CRedisServer(const std::string &strHost, int nPort, int nTimeout, int nConnNumMin, int nConnNumMax, const std::string& strAuth)
+    : m_strHost(strHost), m_nPort(nPort), m_nTimeout(nTimeout),
+      m_nConnNumMin(nConnNumMin), m_nConnNumMax(nConnNumMax),
 			m_strAuth(strAuth)
 {
     Initialize();
@@ -786,7 +792,7 @@ int CRedisServer::CleanConn()
       m_mapConn.erase(m_queIdleConn.front());
       delete m_queIdleConn.front();
       cleaned++;
-      m_queIdleConn.pop();
+      m_queIdleConn.pop_front();
     }
     // specify need cleaned conn to bad.
     for (auto & conn: m_mapConn) {
@@ -809,7 +815,7 @@ CRedisConnection * CRedisServer::FetchConnection()
       pRedisConn = nullptr;
       if (!m_queIdleConn.empty()) {
         pRedisConn = m_queIdleConn.front();
-        m_queIdleConn.pop();
+        m_queIdleConn.pop_front();
       }
       if (pRedisConn!=nullptr) {
         if (pRedisConn->IsBad()) {
@@ -823,6 +829,27 @@ CRedisConnection * CRedisServer::FetchConnection()
         break;
       }
     }
+    // not enough conn, to create new conn.
+    if (pRedisConn==nullptr && m_mapConn.size()<m_nConnNumMax) {
+      MYLOG("server %s not have enough conn and conn size %d, to create new conn\n", this->toString().c_str(), m_mapConn.size());
+      CRedisConnection *newConn = new CRedisConnection(this);
+      if (newConn->IsValid()) {
+        pRedisConn = newConn;
+        m_mapConn[newConn] = true;
+      } else {
+        delete newConn;
+      }
+    } else if (m_queIdleConn.size()>m_nConnNumMin) {
+      int now = time(NULL);
+      // to check if need release old idle conn.
+      CRedisConnection* tailconn = m_queIdleConn.back();
+      if ((now-tailconn->GetUseStamp())>CONN_IDLE_SEC_MAX) {
+        MYLOG("server %s conn size %d>%d and %d-%d>%d, to release\n", this->toString().c_str(), m_mapConn.size(), m_nConnNumMin, now, tailconn->GetUseStamp(), CONN_IDLE_SEC_MAX);
+        m_mapConn.erase(tailconn);
+        delete tailconn;
+        m_queIdleConn.pop_back();
+      }
+    }
 
     m_mutexConn.unlock();
     return pRedisConn;
@@ -831,7 +858,8 @@ CRedisConnection * CRedisServer::FetchConnection()
 void CRedisServer::ReturnConnection(CRedisConnection *pRedisConn)
 {
     m_mutexConn.lock();
-    m_queIdleConn.push(pRedisConn);
+    pRedisConn->SetUseStamp(time(NULL));
+    m_queIdleConn.push_front(pRedisConn);
     m_mutexConn.unlock();
 }
 
@@ -841,12 +869,12 @@ bool CRedisServer::Initialize()
 
     bool succ = false;
     MYLOG("to init CRedisServer %s\n", this->toString().c_str());
-    for (int i = 0; i < m_nConnNum; ++i)
+    for (int i = 0; i < m_nConnNumMin; ++i)
     {
         CRedisConnection *pRedisConn = new CRedisConnection(this);
         if (pRedisConn->IsValid()) {
             succ = true;
-            m_queIdleConn.push(pRedisConn);
+            m_queIdleConn.push_front(pRedisConn);
             m_mapConn[pRedisConn] = true;
         } else {
           delete pRedisConn;
@@ -952,8 +980,8 @@ int CRedisPipeline::FetchNext(redisReply **pReply)
 
 // CRedisClient methods
 CRedisClient::CRedisClient()
-    : m_nPort(-1), m_nTimeout(-1), m_nConnNum(-1), m_bCluster(false),
-      m_bValid(true), m_bExit(false), m_pThread(nullptr)
+    : m_nPort(-1), m_nTimeout(-1), m_nConnNumMin(1), m_nConnNumMax(100), m_bCluster(false),
+      m_bValid(true), m_bExit(false), m_pThread(nullptr), m_pvecSlot(nullptr), m_pvecRedisServ(nullptr)
 {
 #if defined(linux) || defined(__linux) || defined(__linux__)
     pthread_rwlockattr_init(&m_rwAttr);
@@ -968,6 +996,7 @@ CRedisClient::~CRedisClient()
 {
     m_bValid = false;
     m_bExit = true;
+    MYLOG("set m_bValid=false, m_bExit=true\n", "");
     {
         CSafeLock safeLock(&m_rwLock);
         safeLock.WriteLock();
@@ -987,7 +1016,7 @@ CRedisClient::~CRedisClient()
     pthread_rwlock_destroy(&m_rwLock);
 }
 
-bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNum, const std::string& auth)
+bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeout, int nConnNumMin, int nConnNumMax, const std::string& auth)
 {
     MYLOG("to init CRedisClient\n", "");
     m_pvecSlot = new std::vector<SlotRegion>();
@@ -996,11 +1025,12 @@ bool CRedisClient::Initialize(const std::string &strHost, int nPort, int nTimeou
     m_strHost = (nPos == std::string::npos) ? strHost : strHost.substr(0, nPos);
     m_nPort = (nPos == std::string::npos) ? nPort : atoi(strHost.substr(nPos + 1).c_str());
     m_nTimeout = nTimeout;
-    m_nConnNum = nConnNum;
-    if (m_strHost.empty() || m_nPort <= 0 || m_nTimeout <= 0 || m_nConnNum <= 0)
+    m_nConnNumMin = nConnNumMin;
+    m_nConnNumMax = nConnNumMax;
+    if (m_strHost.empty() || m_nPort <= 0 || m_nTimeout <= 0 || m_nConnNumMin <= 0 || m_nConnNumMax<=0)
         return false;
 
-    CRedisServer *pRedisServ = new CRedisServer(m_strHost, m_nPort, m_nTimeout, m_nConnNum, auth);
+    CRedisServer *pRedisServ = new CRedisServer(m_strHost, m_nPort, m_nTimeout, m_nConnNumMin, m_nConnNumMax, auth);
     if (!pRedisServ->IsValid()) {
       MYLOG("inited CRedisServer fail %s %p\n", pRedisServ->toString().c_str(), pRedisServ);
       return false;
@@ -1933,6 +1963,8 @@ void CRedisClient::operator()()
               FreeServerLater();
             }
             if (m_bExit) {
+              MYLOG("to Exit\n", "");
+              //_exit(0);
               return;
             }
             m_bValid = m_bCluster ? LoadClusterSlots() : (*m_pvecRedisServ)[0]->Initialize();
@@ -1950,6 +1982,7 @@ void CRedisClient::operator()()
 }
 
 void CRedisClient::FreeServerLaterForce() {
+  MYLOG("to FreeServerLaterForce\n", "");
   for (auto it=m_vecRedisServToFreeLater.begin(); it !=m_vecRedisServToFreeLater.end(); it++) {
     for (auto &pserv: *(it->first)) {
       if (pserv->ConnSize()>0) {
@@ -1974,6 +2007,7 @@ void CRedisClient::FreeServerLaterForce() {
 }
 
 void CRedisClient::FreeServerLater() {
+  MYLOG("to FreeServerLater\n", "");
   int now = time(NULL);
   const int MaxKeep = 300;
   for (auto it=m_vecRedisServToFreeLater.begin(); it !=m_vecRedisServToFreeLater.end(); ) {
@@ -2062,7 +2096,7 @@ bool CRedisClient::LoadClusterSlots()
       bool b_initSlotServerSucc = true;
       for (auto &slotReg : *pvecSlot) {
         CRedisServer* pSlotServ = new CRedisServer(slotReg.strHost, slotReg.nPort, m_nTimeout,
-            m_nConnNum);
+            m_nConnNumMin, m_nConnNumMax);
         if (!pSlotServ->IsValid()) {
           b_initSlotServerSucc = false;
           MYLOG("inited CRedisServer fail %s, initslot fail\n",
